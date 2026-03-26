@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>N-Body Gravitational Simulation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../../styles.css">
+  <style>
+    /* N-Body page-specific overrides */
+    .canvas-wrap { background: #000000; }
+
+    .controls h1 { color: var(--nbody-accent); }
+
+    input[type="range"]::-webkit-slider-thumb { background: var(--nbody-accent); }
+    input[type="range"]::-moz-range-thumb { background: var(--nbody-accent); }
+
+    .btn.active {
+      border-color: var(--nbody-accent);
+      color: var(--nbody-accent);
+      background: rgba(255, 215, 64, 0.1);
+    }
+
+    .btn.primary {
+      border-color: var(--nbody-accent);
+      color: var(--nbody-accent);
+      background: rgba(255, 215, 64, 0.1);
+    }
+
+    .btn.primary:hover {
+      background: rgba(255, 215, 64, 0.2);
+    }
+
+    .stats {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      line-height: 1.8;
+    }
+
+    .stats span {
+      color: var(--nbody-accent);
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .phase-panel h2 { color: var(--nbody-accent); }
+
+    .preset-btn {
+      flex: 1;
+      min-width: 0;
+      text-align: center;
+      font-size: 0.72rem;
+      padding: 0.4rem 0.4rem;
+    }
+
+    .controls .back-link:hover { color: var(--nbody-accent); }
+  </style>
+</head>
+<body>
+  <div class="sim-page">
+    <!-- Left: Controls Panel -->
+    <div class="controls">
+      <a href="../../index.html" class="back-link">&larr; Back to simulations</a>
+      <h1>N-Body Gravity</h1>
+
+      <div class="control-group">
+        <label>Bodies <span id="n-val">10</span></label>
+        <input type="range" id="slider-n" min="2" max="50" value="10">
+      </div>
+
+      <div class="control-group">
+        <label>Timestep <span id="dt-val">0.002</span></label>
+        <input type="range" id="slider-dt" min="1" max="100" value="20">
+      </div>
+
+      <div class="control-group">
+        <label>Trail Length <span id="trail-val">120</span></label>
+        <input type="range" id="slider-trail" min="0" max="400" value="120">
+      </div>
+
+      <div class="control-group">
+        <label>Softening <span id="soft-val">0.50</span></label>
+        <input type="range" id="slider-soft" min="1" max="100" value="50">
+      </div>
+
+      <hr class="divider">
+
+      <div class="control-group">
+        <label>Presets</label>
+        <div class="btn-row">
+          <button class="btn preset-btn active" data-preset="solar">Solar System</button>
+          <button class="btn preset-btn" data-preset="binary">Binary Star</button>
+          <button class="btn preset-btn" data-preset="cluster">Random Cluster</button>
+        </div>
+      </div>
+
+      <hr class="divider">
+
+      <div class="btn-row">
+        <button class="btn primary" id="btn-pause">Pause</button>
+        <button class="btn" id="btn-restart">Restart</button>
+      </div>
+
+      <hr class="divider">
+
+      <div class="stats">
+        Simulation Time: <span id="stat-time">0.00</span>s<br>
+        Kinetic Energy: <span id="stat-ke">0.00</span><br>
+        Potential Energy: <span id="stat-pe">0.00</span><br>
+        Total Energy: <span id="stat-te">0.00</span><br>
+        FPS: <span id="stat-fps">0</span>
+      </div>
+    </div>
+
+    <!-- Center: Main Canvas -->
+    <div class="canvas-wrap">
+      <canvas id="canvas-main"></canvas>
+    </div>
+
+    <!-- Right: Phase Space Panel -->
+    <div class="phase-panel">
+      <h2>Total Energy vs Time</h2>
+      <canvas id="canvas-phase"></canvas>
+    </div>
+  </div>
+
+<script>
+// ============================================================
+// N-Body Gravitational Simulation
+// Velocity Verlet integration, O(N^2) pairwise gravity
+// ============================================================
+
+(() => {
+  'use strict';
+
+  // --- Constants & Config ---
+  const G = 1.0;
+  const MAX_BODIES = 50;
+  const MAX_TRAIL_LEN = 400;
+
+  // --- DOM Elements ---
+  const canvasMain = document.getElementById('canvas-main');
+  const ctxMain = canvasMain.getContext('2d');
+  const canvasPhase = document.getElementById('canvas-phase');
+  const ctxPhase = canvasPhase.getContext('2d');
+
+  const sliderN = document.getElementById('slider-n');
+  const sliderDt = document.getElementById('slider-dt');
+  const sliderTrail = document.getElementById('slider-trail');
+  const sliderSoft = document.getElementById('slider-soft');
+  const btnPause = document.getElementById('btn-pause');
+  const btnRestart = document.getElementById('btn-restart');
+  const presetBtns = document.querySelectorAll('.preset-btn');
+
+  const valN = document.getElementById('n-val');
+  const valDt = document.getElementById('dt-val');
+  const valTrail = document.getElementById('trail-val');
+  const valSoft = document.getElementById('soft-val');
+
+  const statTime = document.getElementById('stat-time');
+  const statKE = document.getElementById('stat-ke');
+  const statPE = document.getElementById('stat-pe');
+  const statTE = document.getElementById('stat-te');
+  const statFPS = document.getElementById('stat-fps');
+
+  // --- State ---
+  let N = 10;
+  let dt = 0.002;
+  let trailLen = 120;
+  let softening = 0.5;
+  let paused = false;
+  let simTime = 0;
+  let currentPreset = 'solar';
+
+  // TypedArrays for body data (SoA layout)
+  let px, py, vx, vy, ax, ay, mass, radius;
+
+  // Trails: array of Float64Arrays per body
+  let trails = [];     // trails[i] = { x: Float64Array, y: Float64Array, head: 0, count: 0 }
+
+  // Phase space data
+  const PHASE_MAX_POINTS = 2000;
+  let phaseTime = new Float64Array(PHASE_MAX_POINTS);
+  let phaseEnergy = new Float64Array(PHASE_MAX_POINTS);
+  let phaseHead = 0;
+  let phaseCount = 0;
+
+  // FPS tracking
+  let frameCount = 0;
+  let lastFPSTime = performance.now();
+  let currentFPS = 0;
+
+  // --- Utility ---
+  function rand(lo, hi) { return lo + Math.random() * (hi - lo); }
+
+  // --- Initialization ---
+  function allocateArrays(n) {
+    px = new Float64Array(n);
+    py = new Float64Array(n);
+    vx = new Float64Array(n);
+    vy = new Float64Array(n);
+    ax = new Float64Array(n);
+    ay = new Float64Array(n);
+    mass = new Float64Array(n);
+    radius = new Float64Array(n);
+
+    trails = [];
+    for (let i = 0; i < n; i++) {
+      trails.push({
+        x: new Float64Array(MAX_TRAIL_LEN),
+        y: new Float64Array(MAX_TRAIL_LEN),
+        head: 0,
+        count: 0
+      });
+    }
+  }
+
+  function resetPhase() {
+    phaseTime = new Float64Array(PHASE_MAX_POINTS);
+    phaseEnergy = new Float64Array(PHASE_MAX_POINTS);
+    phaseHead = 0;
+    phaseCount = 0;
+  }
+
+  // --- Presets ---
+  function initSolarSystem(n) {
+    allocateArrays(n);
+    // Central star
+    px[0] = 0; py[0] = 0;
+    vx[0] = 0; vy[0] = 0;
+    mass[0] = 500;
+    radius[0] = 8;
+
+    for (let i = 1; i < n; i++) {
+      const angle = rand(0, Math.PI * 2);
+      const dist = rand(40, 250);
+      px[i] = dist * Math.cos(angle);
+      py[i] = dist * Math.sin(angle);
+
+      // Circular orbit velocity
+      const orbitalV = Math.sqrt(G * mass[0] / dist);
+      vx[i] = -orbitalV * Math.sin(angle) * rand(0.9, 1.1);
+      vy[i] = orbitalV * Math.cos(angle) * rand(0.9, 1.1);
+
+      mass[i] = rand(0.5, 5);
+      radius[i] = 2 + mass[i] * 0.4;
+    }
+  }
+
+  function initBinaryStar(n) {
+    allocateArrays(n);
+    const sep = 80;
+    const binaryMass = 200;
+
+    // Binary star 1
+    px[0] = -sep / 2; py[0] = 0;
+    const orbV = Math.sqrt(G * binaryMass / (sep * 2));
+    vx[0] = 0; vy[0] = -orbV;
+    mass[0] = binaryMass;
+    radius[0] = 7;
+
+    // Binary star 2
+    px[1] = sep / 2; py[1] = 0;
+    vx[1] = 0; vy[1] = orbV;
+    mass[1] = binaryMass;
+    radius[1] = 7;
+
+    for (let i = 2; i < n; i++) {
+      const angle = rand(0, Math.PI * 2);
+      const dist = rand(100, 250);
+      px[i] = dist * Math.cos(angle);
+      py[i] = dist * Math.sin(angle);
+
+      const totalCentralMass = mass[0] + mass[1];
+      const orbitalV = Math.sqrt(G * totalCentralMass / dist);
+      vx[i] = -orbitalV * Math.sin(angle) * rand(0.85, 1.15);
+      vy[i] = orbitalV * Math.cos(angle) * rand(0.85, 1.15);
+
+      mass[i] = rand(0.5, 4);
+      radius[i] = 2 + mass[i] * 0.4;
+    }
+  }
+
+  function initRandomCluster(n) {
+    allocateArrays(n);
+    for (let i = 0; i < n; i++) {
+      const angle = rand(0, Math.PI * 2);
+      const dist = rand(10, 200);
+      px[i] = dist * Math.cos(angle);
+      py[i] = dist * Math.sin(angle);
+
+      vx[i] = rand(-20, 20);
+      vy[i] = rand(-20, 20);
+
+      mass[i] = rand(1, 30);
+      radius[i] = 2 + Math.sqrt(mass[i]) * 0.8;
+    }
+
+    // Zero out center-of-mass velocity for stability
+    let totalMass = 0, cmvx = 0, cmvy = 0;
+    for (let i = 0; i < n; i++) {
+      totalMass += mass[i];
+      cmvx += mass[i] * vx[i];
+      cmvy += mass[i] * vy[i];
+    }
+    cmvx /= totalMass;
+    cmvy /= totalMass;
+    for (let i = 0; i < n; i++) {
+      vx[i] -= cmvx;
+      vy[i] -= cmvy;
+    }
+  }
+
+  function initPreset(preset, n) {
+    switch (preset) {
+      case 'solar': initSolarSystem(n); break;
+      case 'binary': initBinaryStar(n); break;
+      case 'cluster': initRandomCluster(n); break;
+    }
+    // Compute initial accelerations
+    computeAccelerations();
+  }
+
+  // --- Physics: Acceleration ---
+  function computeAccelerations() {
+    const eps2 = softening * softening;
+    // Zero accelerations
+    for (let i = 0; i < N; i++) {
+      ax[i] = 0;
+      ay[i] = 0;
+    }
+    // Pairwise O(N^2) gravity
+    for (let i = 0; i < N; i++) {
+      for (let j = i + 1; j < N; j++) {
+        const dx = px[j] - px[i];
+        const dy = py[j] - py[i];
+        const r2 = dx * dx + dy * dy + eps2;
+        const invR = 1.0 / Math.sqrt(r2);
+        const invR3 = invR * invR * invR;
+        const fij = G * invR3;
+
+        ax[i] += fij * mass[j] * dx;
+        ay[i] += fij * mass[j] * dy;
+        ax[j] -= fij * mass[i] * dx;
+        ay[j] -= fij * mass[i] * dy;
+      }
+    }
+  }
+
+  // --- Physics: Velocity Verlet Step ---
+  function step(h) {
+    // Half-kick
+    for (let i = 0; i < N; i++) {
+      vx[i] += 0.5 * h * ax[i];
+      vy[i] += 0.5 * h * ay[i];
+    }
+    // Drift
+    for (let i = 0; i < N; i++) {
+      px[i] += h * vx[i];
+      py[i] += h * vy[i];
+    }
+    // Recompute accelerations
+    computeAccelerations();
+    // Half-kick
+    for (let i = 0; i < N; i++) {
+      vx[i] += 0.5 * h * ax[i];
+      vy[i] += 0.5 * h * ay[i];
+    }
+    simTime += h;
+  }
+
+  // --- Energy Computation ---
+  function computeEnergies() {
+    let ke = 0, pe = 0;
+    const eps2 = softening * softening;
+    for (let i = 0; i < N; i++) {
+      ke += 0.5 * mass[i] * (vx[i] * vx[i] + vy[i] * vy[i]);
+    }
+    for (let i = 0; i < N; i++) {
+      for (let j = i + 1; j < N; j++) {
+        const dx = px[j] - px[i];
+        const dy = py[j] - py[i];
+        const r = Math.sqrt(dx * dx + dy * dy + eps2);
+        pe -= G * mass[i] * mass[j] / r;
+      }
+    }
+    return { ke, pe, total: ke + pe };
+  }
+
+  // --- Trail Recording ---
+  function recordTrails() {
+    for (let i = 0; i < N; i++) {
+      const t = trails[i];
+      t.x[t.head] = px[i];
+      t.y[t.head] = py[i];
+      t.head = (t.head + 1) % MAX_TRAIL_LEN;
+      if (t.count < MAX_TRAIL_LEN) t.count++;
+    }
+  }
+
+  // --- Phase Space Recording ---
+  function recordPhase(totalEnergy) {
+    phaseTime[phaseHead] = simTime;
+    phaseEnergy[phaseHead] = totalEnergy;
+    phaseHead = (phaseHead + 1) % PHASE_MAX_POINTS;
+    if (phaseCount < PHASE_MAX_POINTS) phaseCount++;
+  }
+
+  // --- Canvas Sizing ---
+  function resizeCanvases() {
+    const mainWrap = canvasMain.parentElement;
+    canvasMain.width = mainWrap.clientWidth;
+    canvasMain.height = mainWrap.clientHeight;
+
+    const phaseWrap = canvasPhase.parentElement;
+    canvasPhase.width = phaseWrap.clientWidth;
+    canvasPhase.height = phaseWrap.clientHeight - 30;
+  }
+
+  // --- Rendering: Main Canvas ---
+  function renderMain() {
+    const w = canvasMain.width;
+    const h = canvasMain.height;
+    const cx = w / 2;
+    const cy = h / 2;
+
+    // Fade: semi-transparent overlay for trail effect
+    ctxMain.fillStyle = 'rgba(0, 0, 0, 0.15)';
+    ctxMain.fillRect(0, 0, w, h);
+
+    // Draw trails
+    const effectiveTrailLen = Math.min(trailLen, MAX_TRAIL_LEN);
+    for (let i = 0; i < N; i++) {
+      const t = trails[i];
+      const drawCount = Math.min(t.count, effectiveTrailLen);
+      if (drawCount < 2) continue;
+
+      for (let j = 1; j < drawCount; j++) {
+        const idx0 = (t.head - drawCount + j - 1 + MAX_TRAIL_LEN) % MAX_TRAIL_LEN;
+        const idx1 = (t.head - drawCount + j + MAX_TRAIL_LEN) % MAX_TRAIL_LEN;
+
+        const alpha = (j / drawCount) * 0.6;
+        const isStar = mass[i] > 50;
+
+        if (isStar) {
+          ctxMain.strokeStyle = `rgba(255, 215, 64, ${alpha})`;
+        } else {
+          ctxMain.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.5})`;
+        }
+        ctxMain.lineWidth = isStar ? 1.5 : 0.7;
+        ctxMain.beginPath();
+        ctxMain.moveTo(cx + t.x[idx0], cy + t.y[idx0]);
+        ctxMain.lineTo(cx + t.x[idx1], cy + t.y[idx1]);
+        ctxMain.stroke();
+      }
+    }
+
+    // Draw bodies as glowing points
+    for (let i = 0; i < N; i++) {
+      const sx = cx + px[i];
+      const sy = cy + py[i];
+      const r = radius[i];
+      const isStar = mass[i] > 50;
+
+      // Outer glow
+      const glowR = r * 4;
+      const glow = ctxMain.createRadialGradient(sx, sy, 0, sx, sy, glowR);
+      if (isStar) {
+        glow.addColorStop(0, 'rgba(255, 215, 64, 0.8)');
+        glow.addColorStop(0.3, 'rgba(255, 215, 64, 0.3)');
+        glow.addColorStop(1, 'rgba(255, 215, 64, 0)');
+      } else {
+        glow.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
+        glow.addColorStop(0.4, 'rgba(200, 200, 255, 0.2)');
+        glow.addColorStop(1, 'rgba(200, 200, 255, 0)');
+      }
+      ctxMain.beginPath();
+      ctxMain.arc(sx, sy, glowR, 0, Math.PI * 2);
+      ctxMain.fillStyle = glow;
+      ctxMain.fill();
+
+      // Core
+      const core = ctxMain.createRadialGradient(sx, sy, 0, sx, sy, r);
+      if (isStar) {
+        core.addColorStop(0, '#fff8e1');
+        core.addColorStop(0.5, '#ffd740');
+        core.addColorStop(1, '#ff8f00');
+      } else {
+        core.addColorStop(0, '#ffffff');
+        core.addColorStop(0.6, '#b0bec5');
+        core.addColorStop(1, '#607d8b');
+      }
+      ctxMain.beginPath();
+      ctxMain.arc(sx, sy, r, 0, Math.PI * 2);
+      ctxMain.fillStyle = core;
+      ctxMain.fill();
+    }
+  }
+
+  // --- Rendering: Phase Space (Energy vs Time) ---
+  function renderPhase() {
+    const w = canvasPhase.width;
+    const h = canvasPhase.height;
+    if (w === 0 || h === 0) return;
+
+    ctxPhase.fillStyle = '#0d0d15';
+    ctxPhase.fillRect(0, 0, w, h);
+
+    if (phaseCount < 2) return;
+
+    // Determine data range
+    let tMin = Infinity, tMax = -Infinity;
+    let eMin = Infinity, eMax = -Infinity;
+    for (let k = 0; k < phaseCount; k++) {
+      const idx = (phaseHead - phaseCount + k + PHASE_MAX_POINTS) % PHASE_MAX_POINTS;
+      const t = phaseTime[idx];
+      const e = phaseEnergy[idx];
+      if (t < tMin) tMin = t;
+      if (t > tMax) tMax = t;
+      if (e < eMin) eMin = e;
+      if (e > eMax) eMax = e;
+    }
+
+    // Padding
+    const margin = { top: 20, right: 15, bottom: 30, left: 50 };
+    const plotW = w - margin.left - margin.right;
+    const plotH = h - margin.top - margin.bottom;
+
+    if (plotW <= 0 || plotH <= 0) return;
+
+    const tRange = tMax - tMin || 1;
+    const eRange = eMax - eMin || 1;
+    const ePad = eRange * 0.1;
+
+    // Axes
+    ctxPhase.strokeStyle = '#2a2a3a';
+    ctxPhase.lineWidth = 1;
+    ctxPhase.beginPath();
+    ctxPhase.moveTo(margin.left, margin.top);
+    ctxPhase.lineTo(margin.left, h - margin.bottom);
+    ctxPhase.lineTo(w - margin.right, h - margin.bottom);
+    ctxPhase.stroke();
+
+    // Axis labels
+    ctxPhase.fillStyle = '#6a6a80';
+    ctxPhase.font = '10px Inter, sans-serif';
+    ctxPhase.textAlign = 'center';
+    ctxPhase.fillText('Time', margin.left + plotW / 2, h - 6);
+
+    ctxPhase.save();
+    ctxPhase.translate(12, margin.top + plotH / 2);
+    ctxPhase.rotate(-Math.PI / 2);
+    ctxPhase.fillText('Energy', 0, 0);
+    ctxPhase.restore();
+
+    // Tick labels
+    ctxPhase.fillStyle = '#55556a';
+    ctxPhase.font = '9px Inter, sans-serif';
+    ctxPhase.textAlign = 'right';
+    ctxPhase.fillText((eMax + ePad).toFixed(0), margin.left - 5, margin.top + 4);
+    ctxPhase.fillText((eMin - ePad).toFixed(0), margin.left - 5, h - margin.bottom);
+    ctxPhase.textAlign = 'left';
+    ctxPhase.fillText(tMin.toFixed(1), margin.left, h - margin.bottom + 14);
+    ctxPhase.textAlign = 'right';
+    ctxPhase.fillText(tMax.toFixed(1), w - margin.right, h - margin.bottom + 14);
+
+    // Plot energy line
+    ctxPhase.beginPath();
+    let first = true;
+    for (let k = 0; k < phaseCount; k++) {
+      const idx = (phaseHead - phaseCount + k + PHASE_MAX_POINTS) % PHASE_MAX_POINTS;
+      const t = phaseTime[idx];
+      const e = phaseEnergy[idx];
+      const sx = margin.left + ((t - tMin) / tRange) * plotW;
+      const sy = margin.top + plotH - ((e - (eMin - ePad)) / (eRange + 2 * ePad)) * plotH;
+      if (first) { ctxPhase.moveTo(sx, sy); first = false; }
+      else ctxPhase.lineTo(sx, sy);
+    }
+    ctxPhase.strokeStyle = '#ffd740';
+    ctxPhase.lineWidth = 1.5;
+    ctxPhase.stroke();
+  }
+
+  // --- Main Loop ---
+  let rafId = null;
+  let trailCounter = 0;
+  const TRAIL_RECORD_INTERVAL = 2; // record trail every N frames
+  const PHASE_RECORD_INTERVAL = 4; // record phase every N frames
+
+  function mainLoop() {
+    rafId = requestAnimationFrame(mainLoop);
+
+    if (!paused) {
+      // Sub-step for stability
+      const subSteps = 4;
+      const subDt = dt / subSteps;
+      for (let s = 0; s < subSteps; s++) {
+        step(subDt);
+      }
+
+      trailCounter++;
+      if (trailCounter % TRAIL_RECORD_INTERVAL === 0) {
+        recordTrails();
+      }
+
+      const energies = computeEnergies();
+      if (trailCounter % PHASE_RECORD_INTERVAL === 0) {
+        recordPhase(energies.total);
+      }
+
+      // Update stats
+      statTime.textContent = simTime.toFixed(2);
+      statKE.textContent = energies.ke.toFixed(1);
+      statPE.textContent = energies.pe.toFixed(1);
+      statTE.textContent = energies.total.toFixed(1);
+    }
+
+    renderMain();
+    renderPhase();
+
+    // FPS
+    frameCount++;
+    const now = performance.now();
+    if (now - lastFPSTime >= 1000) {
+      currentFPS = frameCount;
+      frameCount = 0;
+      lastFPSTime = now;
+      statFPS.textContent = currentFPS;
+    }
+  }
+
+  // --- Restart ---
+  function restart() {
+    simTime = 0;
+    trailCounter = 0;
+    resetPhase();
+    N = parseInt(sliderN.value);
+    initPreset(currentPreset, N);
+    // Clear main canvas fully on restart
+    ctxMain.fillStyle = '#000000';
+    ctxMain.fillRect(0, 0, canvasMain.width, canvasMain.height);
+  }
+
+  // --- Event Handlers ---
+  sliderN.addEventListener('input', () => {
+    valN.textContent = sliderN.value;
+  });
+  sliderN.addEventListener('change', () => {
+    restart();
+  });
+
+  sliderDt.addEventListener('input', () => {
+    dt = parseFloat(sliderDt.value) / 10000;
+    valDt.textContent = dt.toFixed(4);
+  });
+
+  sliderTrail.addEventListener('input', () => {
+    trailLen = parseInt(sliderTrail.value);
+    valTrail.textContent = trailLen;
+  });
+
+  sliderSoft.addEventListener('input', () => {
+    softening = parseInt(sliderSoft.value) / 100;
+    valSoft.textContent = softening.toFixed(2);
+  });
+
+  btnPause.addEventListener('click', () => {
+    paused = !paused;
+    btnPause.textContent = paused ? 'Resume' : 'Pause';
+    btnPause.classList.toggle('active', paused);
+  });
+
+  btnRestart.addEventListener('click', restart);
+
+  presetBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      presetBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentPreset = btn.dataset.preset;
+      restart();
+    });
+  });
+
+  // --- Init ---
+  window.addEventListener('resize', resizeCanvases);
+  resizeCanvases();
+  restart();
+  mainLoop();
+})();
+</script>
+</body>
+</html>

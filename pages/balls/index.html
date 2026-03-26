@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>N-Ball in Circle — Billiard Chaos</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../../styles.css">
+  <style>
+    /* Balls-specific overrides */
+    .sim-page.balls-theme .controls {
+      background: #061206;
+      border-right-color: #1a3a1a;
+    }
+    .sim-page.balls-theme .canvas-wrap {
+      background: #040e04;
+    }
+    .sim-page.balls-theme .phase-panel {
+      background: #061206;
+      border-left-color: #1a3a1a;
+    }
+    .sim-page.balls-theme input[type="range"] {
+      background: #1a3a1a;
+    }
+    .sim-page.balls-theme input[type="range"]::-webkit-slider-thumb {
+      background: #39ff14;
+    }
+    .sim-page.balls-theme .btn {
+      border-color: #1a3a1a;
+    }
+    .sim-page.balls-theme .btn:hover {
+      background: rgba(57, 255, 20, 0.08);
+      border-color: #39ff14;
+    }
+    .sim-page.balls-theme .btn.active {
+      background: rgba(57, 255, 20, 0.15);
+      border-color: #39ff14;
+      color: #39ff14;
+    }
+    .sim-page.balls-theme .divider {
+      border-top-color: #1a3a1a;
+    }
+    .sim-page.balls-theme .controls h1 {
+      color: #39ff14;
+    }
+    .sim-page.balls-theme .back-link:hover {
+      color: #39ff14;
+    }
+    .stats {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      line-height: 1.6;
+    }
+    .stats .val {
+      color: #39ff14;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+  </style>
+</head>
+<body>
+
+<div class="sim-page balls-theme">
+
+  <!-- Controls Panel -->
+  <div class="controls">
+    <a href="../../index.html" class="back-link">&larr; Back to simulations</a>
+    <h1>N-Ball in Circle</h1>
+    <p style="font-size:0.8rem; color:var(--text-dim); line-height:1.4; margin-bottom:0.25rem;">
+      Elastic collisions inside a circular boundary. Watch chaotic billiard dynamics emerge.
+    </p>
+
+    <hr class="divider">
+
+    <div class="control-group">
+      <label>Number of Balls <span id="n-val">15</span></label>
+      <input type="range" id="slider-n" min="2" max="100" value="15">
+    </div>
+
+    <div class="control-group">
+      <label>Ball Radius <span id="r-val">8</span></label>
+      <input type="range" id="slider-r" min="3" max="20" value="8">
+    </div>
+
+    <div class="control-group">
+      <label>Initial Speed <span id="speed-val">3.0</span></label>
+      <input type="range" id="slider-speed" min="1" max="10" value="3" step="0.5">
+    </div>
+
+    <hr class="divider">
+
+    <div class="control-group">
+      <label>Presets</label>
+      <div class="btn-row">
+        <button class="btn" id="preset-few">Few Fast</button>
+        <button class="btn" id="preset-mid">Medium</button>
+        <button class="btn" id="preset-many">Many Slow</button>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <div class="btn-row">
+      <button class="btn active" id="btn-pause">Pause</button>
+      <button class="btn" id="btn-restart">Restart</button>
+    </div>
+
+    <hr class="divider">
+
+    <div class="control-group">
+      <label>Trails</label>
+      <div class="btn-row">
+        <button class="btn" id="btn-trails-off">Off</button>
+        <button class="btn active" id="btn-trails-short">Short</button>
+        <button class="btn" id="btn-trails-long">Long</button>
+      </div>
+    </div>
+
+    <hr class="divider">
+
+    <div class="stats">
+      <div>Total KE: <span class="val" id="stat-ke">0</span></div>
+      <div>Collisions: <span class="val" id="stat-collisions">0</span></div>
+      <div>FPS: <span class="val" id="stat-fps">0</span></div>
+    </div>
+  </div>
+
+  <!-- Main Canvas -->
+  <div class="canvas-wrap">
+    <canvas id="main-canvas"></canvas>
+  </div>
+
+  <!-- Phase Space Panel -->
+  <div class="phase-panel">
+    <h2>Speed Distribution</h2>
+    <canvas id="phase-canvas"></canvas>
+  </div>
+
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  // ─── DOM refs ───
+  const mainCanvas = document.getElementById('main-canvas');
+  const mainCtx = mainCanvas.getContext('2d');
+  const phaseCanvas = document.getElementById('phase-canvas');
+  const phaseCtx = phaseCanvas.getContext('2d');
+  const canvasWrap = mainCanvas.parentElement;
+
+  const sliderN = document.getElementById('slider-n');
+  const sliderR = document.getElementById('slider-r');
+  const sliderSpeed = document.getElementById('slider-speed');
+  const nVal = document.getElementById('n-val');
+  const rVal = document.getElementById('r-val');
+  const speedVal = document.getElementById('speed-val');
+  const btnPause = document.getElementById('btn-pause');
+  const btnRestart = document.getElementById('btn-restart');
+  const statKE = document.getElementById('stat-ke');
+  const statCollisions = document.getElementById('stat-collisions');
+  const statFPS = document.getElementById('stat-fps');
+
+  // ─── State ───
+  let N = 15;
+  let ballRadius = 8;
+  let initSpeed = 3.0;
+  let running = true;
+  let trailLength = 30; // 0 = off, 30 = short, 80 = long
+  let collisionCount = 0;
+
+  // Boundary
+  let boundaryRadius = 250;
+  let cx = 0, cy = 0;
+
+  // Balls: arrays of Float64
+  let px, py, vx, vy;
+  // Per-ball collision flash (0..1, decays over time)
+  let flash;
+  // Trail history: array of arrays of {x, y}
+  let trails;
+
+  // Physics constants
+  const SUB_STEPS = 8;
+  const DT = 1 / 60;
+
+  // FPS counter
+  let frameCount = 0;
+  let lastFPSTime = performance.now();
+  let displayFPS = 60;
+
+  // ─── Resize handling ───
+  function resize() {
+    const rect = canvasWrap.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    mainCanvas.width = rect.width * dpr;
+    mainCanvas.height = rect.height * dpr;
+    mainCanvas.style.width = rect.width + 'px';
+    mainCanvas.style.height = rect.height + 'px';
+    mainCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    cx = rect.width / 2;
+    cy = rect.height / 2;
+    boundaryRadius = Math.min(rect.width, rect.height) * 0.44;
+
+    // Phase canvas
+    const phaseRect = phaseCanvas.parentElement.getBoundingClientRect();
+    const pw = phaseRect.width - 32; // padding
+    const ph = phaseRect.height - 40;
+    phaseCanvas.width = Math.max(pw, 100) * dpr;
+    phaseCanvas.height = Math.max(ph, 100) * dpr;
+    phaseCanvas.style.width = Math.max(pw, 100) + 'px';
+    phaseCanvas.style.height = Math.max(ph, 100) + 'px';
+    phaseCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // ─── Initialization ───
+  function initBalls() {
+    collisionCount = 0;
+    px = new Float64Array(N);
+    py = new Float64Array(N);
+    vx = new Float64Array(N);
+    vy = new Float64Array(N);
+    flash = new Float64Array(N);
+    trails = [];
+    for (let i = 0; i < N; i++) trails.push([]);
+
+    const maxR = boundaryRadius - ballRadius - 2;
+    let placed = 0;
+    let attempts = 0;
+    while (placed < N && attempts < N * 500) {
+      attempts++;
+      const angle = Math.random() * Math.PI * 2;
+      const dist = Math.random() * maxR;
+      const tx = dist * Math.cos(angle);
+      const ty = dist * Math.sin(angle);
+
+      // Check overlap with already placed
+      let overlap = false;
+      for (let j = 0; j < placed; j++) {
+        const ddx = tx - px[j];
+        const ddy = ty - py[j];
+        if (ddx * ddx + ddy * ddy < (ballRadius * 2 + 2) * (ballRadius * 2 + 2)) {
+          overlap = true;
+          break;
+        }
+      }
+      if (overlap) continue;
+
+      px[placed] = tx;
+      py[placed] = ty;
+      const a = Math.random() * Math.PI * 2;
+      // Scale speed relative to boundary so motion looks good at any size
+      const spd = initSpeed * (0.5 + Math.random()) * boundaryRadius * 0.012;
+      vx[placed] = spd * Math.cos(a);
+      vy[placed] = spd * Math.sin(a);
+      placed++;
+    }
+
+    // If we couldn't place all, reduce N for this run
+    if (placed < N) {
+      N = placed;
+      px = px.slice(0, N);
+      py = py.slice(0, N);
+      vx = vx.slice(0, N);
+      vy = vy.slice(0, N);
+      flash = flash.slice(0, N);
+      trails = trails.slice(0, N);
+    }
+  }
+
+  // ─── Physics step ───
+  function step(dt) {
+    const subDt = dt / SUB_STEPS;
+
+    for (let s = 0; s < SUB_STEPS; s++) {
+      // Move
+      for (let i = 0; i < N; i++) {
+        px[i] += vx[i] * subDt;
+        py[i] += vy[i] * subDt;
+      }
+
+      // Ball-wall collisions
+      for (let i = 0; i < N; i++) {
+        const dist = Math.sqrt(px[i] * px[i] + py[i] * py[i]);
+        const limit = boundaryRadius - ballRadius;
+        if (dist > limit && dist > 0.0001) {
+          // Normal pointing inward
+          const nx = px[i] / dist;
+          const ny = py[i] / dist;
+
+          // Push back
+          px[i] = nx * limit;
+          py[i] = ny * limit;
+
+          // Reflect velocity
+          const dot = vx[i] * nx + vy[i] * ny;
+          if (dot > 0) {
+            vx[i] -= 2 * dot * nx;
+            vy[i] -= 2 * dot * ny;
+          }
+          flash[i] = 1.0;
+          collisionCount++;
+        }
+      }
+
+      // Ball-ball collisions
+      for (let i = 0; i < N; i++) {
+        for (let j = i + 1; j < N; j++) {
+          const ddx = px[j] - px[i];
+          const ddy = py[j] - py[i];
+          const distSq = ddx * ddx + ddy * ddy;
+          const minDist = ballRadius * 2;
+
+          if (distSq < minDist * minDist && distSq > 0.0001) {
+            const dist = Math.sqrt(distSq);
+            const nx = ddx / dist;
+            const ny = ddy / dist;
+
+            // Resolve overlap: push apart equally
+            const overlap = minDist - dist;
+            const push = overlap * 0.5 + 0.01;
+            px[i] -= nx * push;
+            py[i] -= ny * push;
+            px[j] += nx * push;
+            py[j] += ny * push;
+
+            // Elastic collision (equal mass)
+            const dvx = vx[i] - vx[j];
+            const dvy = vy[i] - vy[j];
+            const dvDotN = dvx * nx + dvy * ny;
+
+            // Only resolve if approaching
+            if (dvDotN > 0) {
+              vx[i] -= dvDotN * nx;
+              vy[i] -= dvDotN * ny;
+              vx[j] += dvDotN * nx;
+              vy[j] += dvDotN * ny;
+            }
+
+            flash[i] = 1.0;
+            flash[j] = 1.0;
+            collisionCount++;
+          }
+        }
+      }
+    }
+
+    // Decay flash
+    for (let i = 0; i < N; i++) {
+      flash[i] *= 0.9;
+      if (flash[i] < 0.01) flash[i] = 0;
+    }
+
+    // Record trails
+    if (trailLength > 0) {
+      for (let i = 0; i < N; i++) {
+        trails[i].push({ x: px[i], y: py[i] });
+        if (trails[i].length > trailLength) {
+          trails[i].shift();
+        }
+      }
+    }
+  }
+
+  // ─── Color helpers ───
+  function lerpColor(r1, g1, b1, r2, g2, b2, t) {
+    return [
+      Math.round(r1 + (r2 - r1) * t),
+      Math.round(g1 + (g2 - g1) * t),
+      Math.round(b1 + (b2 - b1) * t)
+    ];
+  }
+
+  // ─── Render main canvas ───
+  function renderMain() {
+    const w = parseInt(mainCanvas.style.width);
+    const h = parseInt(mainCanvas.style.height);
+    mainCtx.clearRect(0, 0, w, h);
+
+    // Draw boundary circle
+    mainCtx.beginPath();
+    mainCtx.arc(cx, cy, boundaryRadius, 0, Math.PI * 2);
+    mainCtx.strokeStyle = '#1a4a1a';
+    mainCtx.lineWidth = 2;
+    mainCtx.stroke();
+
+    // Subtle boundary glow
+    mainCtx.beginPath();
+    mainCtx.arc(cx, cy, boundaryRadius, 0, Math.PI * 2);
+    mainCtx.strokeStyle = 'rgba(57, 255, 20, 0.08)';
+    mainCtx.lineWidth = 8;
+    mainCtx.stroke();
+
+    // Draw trails
+    if (trailLength > 0) {
+      for (let i = 0; i < N; i++) {
+        const trail = trails[i];
+        if (trail.length < 2) continue;
+        for (let t = 1; t < trail.length; t++) {
+          const alpha = (t / trail.length) * 0.4;
+          mainCtx.beginPath();
+          mainCtx.moveTo(cx + trail[t - 1].x, cy + trail[t - 1].y);
+          mainCtx.lineTo(cx + trail[t].x, cy + trail[t].y);
+          mainCtx.strokeStyle = `rgba(57, 255, 20, ${alpha})`;
+          mainCtx.lineWidth = ballRadius * 0.5;
+          mainCtx.lineCap = 'round';
+          mainCtx.stroke();
+        }
+      }
+    }
+
+    // Draw balls
+    for (let i = 0; i < N; i++) {
+      const f = flash[i];
+      let r, g, b;
+      if (f > 0) {
+        // Lerp from neon green (57,255,20) to red (255,23,68)
+        [r, g, b] = lerpColor(57, 255, 20, 255, 23, 68, f);
+      } else {
+        r = 57; g = 255; b = 20;
+      }
+
+      const bx = cx + px[i];
+      const by = cy + py[i];
+
+      // Glow
+      if (f > 0.3) {
+        mainCtx.beginPath();
+        mainCtx.arc(bx, by, ballRadius * 2.5, 0, Math.PI * 2);
+        const glow = mainCtx.createRadialGradient(bx, by, ballRadius * 0.5, bx, by, ballRadius * 2.5);
+        glow.addColorStop(0, `rgba(255, 23, 68, ${f * 0.4})`);
+        glow.addColorStop(1, 'rgba(255, 23, 68, 0)');
+        mainCtx.fillStyle = glow;
+        mainCtx.fill();
+      }
+
+      // Ball body
+      mainCtx.beginPath();
+      mainCtx.arc(bx, by, ballRadius, 0, Math.PI * 2);
+      const grad = mainCtx.createRadialGradient(bx - ballRadius * 0.3, by - ballRadius * 0.3, ballRadius * 0.1, bx, by, ballRadius);
+      grad.addColorStop(0, `rgba(${Math.min(r + 80, 255)}, ${Math.min(g + 40, 255)}, ${Math.min(b + 40, 255)}, 1)`);
+      grad.addColorStop(1, `rgba(${r}, ${g}, ${b}, 1)`);
+      mainCtx.fillStyle = grad;
+      mainCtx.fill();
+    }
+  }
+
+  // ─── Render phase space (speed distribution histogram) ───
+  function renderPhase() {
+    const w = parseInt(phaseCanvas.style.width) || 200;
+    const h = parseInt(phaseCanvas.style.height) || 200;
+    phaseCtx.clearRect(0, 0, w, h);
+
+    if (N === 0) return;
+
+    // Compute speeds
+    const speeds = new Float64Array(N);
+    let maxSpeed = 0;
+    for (let i = 0; i < N; i++) {
+      speeds[i] = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i]);
+      if (speeds[i] > maxSpeed) maxSpeed = speeds[i];
+    }
+    if (maxSpeed < 0.01) maxSpeed = 1;
+
+    // Bin into histogram
+    const numBins = Math.min(20, Math.max(5, Math.floor(N / 2)));
+    const binWidth = (maxSpeed * 1.1) / numBins;
+    const bins = new Int32Array(numBins);
+    for (let i = 0; i < N; i++) {
+      const bin = Math.min(Math.floor(speeds[i] / binWidth), numBins - 1);
+      bins[bin]++;
+    }
+
+    let maxBin = 0;
+    for (let i = 0; i < numBins; i++) {
+      if (bins[i] > maxBin) maxBin = bins[i];
+    }
+    if (maxBin === 0) maxBin = 1;
+
+    // Draw
+    const pad = { top: 15, bottom: 35, left: 35, right: 10 };
+    const plotW = w - pad.left - pad.right;
+    const plotH = h - pad.top - pad.bottom;
+    const barW = plotW / numBins;
+
+    // Axes
+    phaseCtx.strokeStyle = '#1a3a1a';
+    phaseCtx.lineWidth = 1;
+    phaseCtx.beginPath();
+    phaseCtx.moveTo(pad.left, pad.top);
+    phaseCtx.lineTo(pad.left, pad.top + plotH);
+    phaseCtx.lineTo(pad.left + plotW, pad.top + plotH);
+    phaseCtx.stroke();
+
+    // Axis labels
+    phaseCtx.fillStyle = '#557755';
+    phaseCtx.font = '10px Inter, sans-serif';
+    phaseCtx.textAlign = 'center';
+    phaseCtx.fillText('Speed', pad.left + plotW / 2, h - 5);
+
+    phaseCtx.save();
+    phaseCtx.translate(10, pad.top + plotH / 2);
+    phaseCtx.rotate(-Math.PI / 2);
+    phaseCtx.fillText('Count', 0, 0);
+    phaseCtx.restore();
+
+    // Tick labels on x-axis
+    phaseCtx.fillStyle = '#446644';
+    phaseCtx.font = '9px Inter, sans-serif';
+    phaseCtx.textAlign = 'center';
+    for (let i = 0; i <= numBins; i += Math.max(1, Math.floor(numBins / 4))) {
+      const xp = pad.left + i * barW;
+      const val = (i * binWidth).toFixed(1);
+      phaseCtx.fillText(val, xp, pad.top + plotH + 14);
+    }
+
+    // Y-axis ticks
+    phaseCtx.textAlign = 'right';
+    for (let t = 0; t <= maxBin; t += Math.max(1, Math.ceil(maxBin / 4))) {
+      const yp = pad.top + plotH - (t / maxBin) * plotH;
+      phaseCtx.fillText(t.toString(), pad.left - 5, yp + 3);
+    }
+
+    // Bars
+    for (let i = 0; i < numBins; i++) {
+      const barH = (bins[i] / maxBin) * plotH;
+      const xp = pad.left + i * barW;
+      const yp = pad.top + plotH - barH;
+
+      const grad = phaseCtx.createLinearGradient(xp, yp, xp, pad.top + plotH);
+      grad.addColorStop(0, 'rgba(57, 255, 20, 0.8)');
+      grad.addColorStop(1, 'rgba(57, 255, 20, 0.2)');
+      phaseCtx.fillStyle = grad;
+      phaseCtx.fillRect(xp + 1, yp, barW - 2, barH);
+
+      // Top highlight
+      phaseCtx.fillStyle = 'rgba(57, 255, 20, 0.9)';
+      phaseCtx.fillRect(xp + 1, yp, barW - 2, Math.min(2, barH));
+    }
+
+    // Maxwell-Boltzmann overlay (theoretical for 2D)
+    if (N >= 8) {
+      // Compute mean speed squared for temperature estimate
+      let sumV2 = 0;
+      for (let i = 0; i < N; i++) sumV2 += speeds[i] * speeds[i];
+      const avgV2 = sumV2 / N;
+      // 2D MB: f(v) = (v / sigma^2) * exp(-v^2 / (2 sigma^2)), sigma^2 = avgV2/2
+      const sigma2 = avgV2 / 2;
+      if (sigma2 > 0.001) {
+        phaseCtx.beginPath();
+        phaseCtx.strokeStyle = 'rgba(57, 255, 20, 0.35)';
+        phaseCtx.lineWidth = 1.5;
+        phaseCtx.setLineDash([4, 3]);
+        // Scale to match histogram
+        const totalArea = N * binWidth;
+        let first = true;
+        for (let xi = 0; xi <= plotW; xi += 2) {
+          const v = (xi / plotW) * maxSpeed * 1.1;
+          const fv = (v / sigma2) * Math.exp(-v * v / (2 * sigma2));
+          const yVal = fv * totalArea;
+          const yp = pad.top + plotH - (yVal / maxBin) * plotH;
+          if (first) { phaseCtx.moveTo(pad.left + xi, yp); first = false; }
+          else phaseCtx.lineTo(pad.left + xi, yp);
+        }
+        phaseCtx.stroke();
+        phaseCtx.setLineDash([]);
+
+        // Legend
+        phaseCtx.fillStyle = 'rgba(57, 255, 20, 0.4)';
+        phaseCtx.font = '9px Inter, sans-serif';
+        phaseCtx.textAlign = 'left';
+        phaseCtx.fillText('-- 2D Maxwell-Boltzmann', pad.left + 5, pad.top + 10);
+      }
+    }
+  }
+
+  // ─── Main loop ───
+  let lastTime = 0;
+  function loop(timestamp) {
+    requestAnimationFrame(loop);
+
+    // FPS calculation
+    frameCount++;
+    if (timestamp - lastFPSTime >= 1000) {
+      displayFPS = frameCount;
+      frameCount = 0;
+      lastFPSTime = timestamp;
+    }
+
+    if (running) {
+      step(DT);
+    }
+
+    renderMain();
+    renderPhase();
+
+    // Update stats
+    let ke = 0;
+    for (let i = 0; i < N; i++) {
+      ke += 0.5 * (vx[i] * vx[i] + vy[i] * vy[i]);
+    }
+    statKE.textContent = ke.toFixed(1);
+    statCollisions.textContent = collisionCount;
+    statFPS.textContent = displayFPS;
+  }
+
+  // ─── Event handlers ───
+  function restart() {
+    N = parseInt(sliderN.value);
+    ballRadius = parseInt(sliderR.value);
+    initSpeed = parseFloat(sliderSpeed.value);
+    initBalls();
+  }
+
+  sliderN.addEventListener('input', () => {
+    nVal.textContent = sliderN.value;
+  });
+  sliderR.addEventListener('input', () => {
+    rVal.textContent = sliderR.value;
+  });
+  sliderSpeed.addEventListener('input', () => {
+    speedVal.textContent = parseFloat(sliderSpeed.value).toFixed(1);
+  });
+
+  // Apply changes on release
+  sliderN.addEventListener('change', restart);
+  sliderR.addEventListener('change', restart);
+  sliderSpeed.addEventListener('change', restart);
+
+  btnPause.addEventListener('click', () => {
+    running = !running;
+    btnPause.textContent = running ? 'Pause' : 'Resume';
+    btnPause.classList.toggle('active', running);
+  });
+
+  btnRestart.addEventListener('click', restart);
+
+  // Presets
+  document.getElementById('preset-few').addEventListener('click', () => {
+    sliderN.value = 5; nVal.textContent = '5';
+    sliderR.value = 12; rVal.textContent = '12';
+    sliderSpeed.value = 7; speedVal.textContent = '7.0';
+    restart();
+  });
+  document.getElementById('preset-mid').addEventListener('click', () => {
+    sliderN.value = 25; nVal.textContent = '25';
+    sliderR.value = 8; rVal.textContent = '8';
+    sliderSpeed.value = 3; speedVal.textContent = '3.0';
+    restart();
+  });
+  document.getElementById('preset-many').addEventListener('click', () => {
+    sliderN.value = 60; nVal.textContent = '60';
+    sliderR.value = 5; rVal.textContent = '5';
+    sliderSpeed.value = 1.5; speedVal.textContent = '1.5';
+    restart();
+  });
+
+  // Trail buttons
+  const btnTrailsOff = document.getElementById('btn-trails-off');
+  const btnTrailsShort = document.getElementById('btn-trails-short');
+  const btnTrailsLong = document.getElementById('btn-trails-long');
+
+  function setTrails(len, activeBtn) {
+    trailLength = len;
+    [btnTrailsOff, btnTrailsShort, btnTrailsLong].forEach(b => b.classList.remove('active'));
+    activeBtn.classList.add('active');
+    // Clear trails
+    for (let i = 0; i < N; i++) trails[i] = [];
+  }
+
+  btnTrailsOff.addEventListener('click', () => setTrails(0, btnTrailsOff));
+  btnTrailsShort.addEventListener('click', () => setTrails(30, btnTrailsShort));
+  btnTrailsLong.addEventListener('click', () => setTrails(80, btnTrailsLong));
+
+  // ─── Init ───
+  window.addEventListener('resize', () => {
+    resize();
+  });
+
+  resize();
+  initBalls();
+  requestAnimationFrame(loop);
+
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>N-Pendulum — Chaotic Mechanics</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../../styles.css">
+  <style>
+    /* Pendulum-specific accent overrides */
+    input[type="range"]::-webkit-slider-thumb {
+      background: var(--pendulum-accent);
+    }
+    .btn.accent {
+      border-color: var(--pendulum-accent);
+      color: var(--pendulum-accent);
+    }
+    .btn.accent:hover {
+      background: rgba(0,229,255,0.1);
+    }
+    .btn.accent.active {
+      background: rgba(0,229,255,0.18);
+      border-color: var(--pendulum-accent);
+      color: #fff;
+    }
+    .status-bar {
+      display: flex;
+      gap: 1rem;
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      margin-top: auto;
+      padding-top: 0.5rem;
+      border-top: 1px solid var(--border);
+    }
+    .status-bar .val {
+      color: var(--pendulum-accent);
+      font-weight: 600;
+    }
+    .phase-panel .legend {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      margin-top: 0.4rem;
+      display: flex;
+      justify-content: space-between;
+    }
+    .energy-readout {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      margin-top: 0.5rem;
+    }
+    .energy-readout .val {
+      color: var(--pendulum-accent);
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="sim-page">
+    <!-- Controls Panel -->
+    <aside class="controls">
+      <a href="../../index.html" class="back-link">← Back to simulations</a>
+      <h1>N-Pendulum</h1>
+      <p style="font-size:0.8rem;color:var(--text-dim);line-height:1.4;">
+        Chain of coupled pendulums exhibiting chaotic dynamics. Adjust parameters and watch sensitivity to initial conditions.
+      </p>
+
+      <hr class="divider">
+
+      <div class="control-group">
+        <label>Pendulums <span id="n-display">3</span></label>
+        <input type="range" id="slider-n" min="1" max="10" value="3" step="1">
+      </div>
+
+      <div class="control-group">
+        <label>Gravity <span id="g-display">9.81</span></label>
+        <input type="range" id="slider-g" min="1" max="20" value="9.81" step="0.01">
+      </div>
+
+      <div class="control-group">
+        <label>Time Scale <span id="speed-display">1.0x</span></label>
+        <input type="range" id="slider-speed" min="0.1" max="3" value="1" step="0.1">
+      </div>
+
+      <hr class="divider">
+
+      <div class="control-group">
+        <label>Presets</label>
+        <div class="btn-row">
+          <button class="btn accent active" data-preset="0" id="preset-0">Small Angle</button>
+          <button class="btn accent" data-preset="1" id="preset-1">Large Angle</button>
+          <button class="btn accent" data-preset="2" id="preset-2">Spread</button>
+        </div>
+      </div>
+
+      <hr class="divider">
+
+      <div class="btn-row">
+        <button class="btn primary" id="btn-pause">Pause</button>
+        <button class="btn" id="btn-restart">Restart</button>
+      </div>
+
+      <div class="control-group">
+        <label>Trail Length <span id="trail-display">200</span></label>
+        <input type="range" id="slider-trail" min="0" max="600" value="200" step="10">
+      </div>
+
+      <div class="energy-readout">
+        Energy: <span class="val" id="energy-val">0.00</span>
+      </div>
+
+      <div class="status-bar">
+        <div>FPS: <span class="val" id="fps-val">0</span></div>
+        <div>Time: <span class="val" id="time-val">0.0</span>s</div>
+      </div>
+    </aside>
+
+    <!-- Main Canvas -->
+    <div class="canvas-wrap" id="canvas-wrap">
+      <canvas id="canvas-main"></canvas>
+    </div>
+
+    <!-- Phase Space Panel -->
+    <aside class="phase-panel">
+      <h2>Phase Space — Last Pendulum</h2>
+      <canvas id="canvas-phase"></canvas>
+      <div class="legend">
+        <span>θ (angle)</span>
+        <span>ω (angular velocity)</span>
+      </div>
+    </aside>
+  </div>
+
+<script>
+// =============================================================================
+//  N-Pendulum Simulation — Lagrangian Mechanics with RK4 Integration
+// =============================================================================
+(() => {
+  'use strict';
+
+  // --- DOM refs ---
+  const canvasMain  = document.getElementById('canvas-main');
+  const ctxMain     = canvasMain.getContext('2d');
+  const canvasPhase = document.getElementById('canvas-phase');
+  const ctxPhase    = canvasPhase.getContext('2d');
+  const canvasWrap  = document.getElementById('canvas-wrap');
+
+  const sliderN     = document.getElementById('slider-n');
+  const sliderG     = document.getElementById('slider-g');
+  const sliderSpeed = document.getElementById('slider-speed');
+  const sliderTrail = document.getElementById('slider-trail');
+  const nDisplay    = document.getElementById('n-display');
+  const gDisplay    = document.getElementById('g-display');
+  const speedDisplay= document.getElementById('speed-display');
+  const trailDisplay= document.getElementById('trail-display');
+  const btnPause    = document.getElementById('btn-pause');
+  const btnRestart  = document.getElementById('btn-restart');
+  const fpsVal      = document.getElementById('fps-val');
+  const timeVal     = document.getElementById('time-val');
+  const energyVal   = document.getElementById('energy-val');
+
+  // --- Constants ---
+  const FIXED_DT    = 1 / 240;        // physics timestep (s)
+  const MAX_STEPS   = 16;             // max physics steps per frame
+  const COLORS = {
+    primary:   '#1a237e',
+    accent:    '#00e5ff',
+    highlight: '#aa00ff',
+    rod:       'rgba(0, 229, 255, 0.6)',
+    mass:      '#00e5ff',
+    trail:     '#aa00ff',
+    phasePoint:'#00e5ff',
+    phaseFade: 'rgba(170, 0, 255, 0.8)',
+  };
+
+  // --- State ---
+  let N = 3;
+  let g = 9.81;
+  let timeScale = 1.0;
+  let maxTrail = 200;
+  let running = true;
+  let simTime = 0;
+  let activePreset = 0;
+
+  // State arrays (preallocated for max N=10)
+  let theta   = new Float64Array(10);  // angles
+  let omega   = new Float64Array(10);  // angular velocities
+  let lengths = new Float64Array(10);  // rod lengths
+  let masses  = new Float64Array(10);  // masses
+
+  // Trail for last mass
+  let trail = [];       // [{x, y}]
+  // Phase space trail
+  let phaseTrail = [];  // [{theta, omega}]
+
+  // Temp arrays for RK4 (avoid per-frame allocation)
+  const _k1t = new Float64Array(10);
+  const _k1o = new Float64Array(10);
+  const _k2t = new Float64Array(10);
+  const _k2o = new Float64Array(10);
+  const _k3t = new Float64Array(10);
+  const _k3o = new Float64Array(10);
+  const _k4t = new Float64Array(10);
+  const _k4o = new Float64Array(10);
+  const _tmpTheta = new Float64Array(10);
+  const _tmpOmega = new Float64Array(10);
+
+  // Matrix solver temp arrays
+  const _M = [];       // mass matrix rows
+  const _F = new Float64Array(10);  // force vector
+  const _alpha = new Float64Array(10); // angular accelerations
+
+  for (let i = 0; i < 10; i++) _M.push(new Float64Array(11)); // augmented matrix
+
+  // FPS tracking
+  let frameCount = 0;
+  let fpsTimer = 0;
+  let lastFps = 0;
+
+  // ==========================================================================
+  //  PRESETS
+  // ==========================================================================
+  const PRESETS = [
+    { // Small Angle — all at 15 degrees
+      name: 'Small Angle',
+      init: (n) => {
+        const rad = 15 * Math.PI / 180;
+        for (let i = 0; i < n; i++) { theta[i] = rad; omega[i] = 0; }
+      }
+    },
+    { // Large Angle — first at 120 degrees
+      name: 'Large Angle',
+      init: (n) => {
+        for (let i = 0; i < n; i++) { theta[i] = 0; omega[i] = 0; }
+        theta[0] = 120 * Math.PI / 180;
+      }
+    },
+    { // Spread — alternating ±90 degrees
+      name: 'Spread',
+      init: (n) => {
+        for (let i = 0; i < n; i++) {
+          theta[i] = (i % 2 === 0 ? 1 : -1) * 90 * Math.PI / 180;
+          omega[i] = 0;
+        }
+      }
+    }
+  ];
+
+  // ==========================================================================
+  //  INITIALIZATION
+  // ==========================================================================
+  function initSim() {
+    simTime = 0;
+    trail = [];
+    phaseTrail = [];
+
+    // Equal masses and lengths
+    for (let i = 0; i < N; i++) {
+      masses[i] = 1.0;
+      lengths[i] = 1.0;
+    }
+
+    // Apply preset
+    PRESETS[activePreset].init(N);
+
+    // Clear canvases
+    resizeCanvases();
+    clearPhaseCanvas();
+  }
+
+  // ==========================================================================
+  //  LAGRANGIAN N-PENDULUM PHYSICS
+  //
+  //  Using the mass-matrix approach:
+  //    M * alpha = F
+  //  where M_ij and F_i are derived from the Lagrangian of coupled pendulums.
+  //
+  //  For an N-pendulum with masses m_k and lengths l_k:
+  //
+  //  M_ij = sum_{k=max(i,j)}^{N-1} m_k * l_i * l_j * cos(theta_i - theta_j)
+  //
+  //  F_i = -sum_{k=max(i,j)}^{N-1} [ m_k * l_i * l_j * sin(theta_i - theta_j) * omega_j^2 ]
+  //        - (sum_{k=i}^{N-1} m_k) * g * l_i * sin(theta_i)
+  //
+  //  (summed over j != i for the velocity coupling term)
+  // ==========================================================================
+  function computeAccelerations(n, th, om, out) {
+    // Build mass matrix M and force vector F
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        // M_ij = l_i * l_j * cos(th_i - th_j) * sum_{k=max(i,j)}^{n-1} m_k
+        let msum = 0;
+        const kmin = i > j ? i : j;
+        for (let k = kmin; k < n; k++) msum += masses[k];
+        _M[i][j] = lengths[i] * lengths[j] * Math.cos(th[i] - th[j]) * msum;
+      }
+
+      // F_i
+      let fi = 0;
+      // Velocity coupling: sum over j
+      for (let j = 0; j < n; j++) {
+        if (j === i) continue;
+        let msum = 0;
+        const kmin = i > j ? i : j;
+        for (let k = kmin; k < n; k++) msum += masses[k];
+        fi -= lengths[i] * lengths[j] * Math.sin(th[i] - th[j]) * om[j] * om[j] * msum;
+      }
+      // Gravity
+      let msum = 0;
+      for (let k = i; k < n; k++) msum += masses[k];
+      fi -= msum * g * lengths[i] * Math.sin(th[i]);
+
+      _F[i] = fi;
+    }
+
+    // Solve M * alpha = F using Gaussian elimination with partial pivoting
+    // Build augmented matrix [M | F]
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) _M[i][j] = _M[i][j]; // already set
+      _M[i][n] = _F[i];
+    }
+
+    for (let col = 0; col < n; col++) {
+      // Partial pivoting
+      let maxVal = Math.abs(_M[col][col]);
+      let maxRow = col;
+      for (let row = col + 1; row < n; row++) {
+        const v = Math.abs(_M[row][col]);
+        if (v > maxVal) { maxVal = v; maxRow = row; }
+      }
+      if (maxRow !== col) {
+        const tmp = _M[col];
+        _M[col] = _M[maxRow];
+        _M[maxRow] = tmp;
+      }
+
+      const pivot = _M[col][col];
+      if (Math.abs(pivot) < 1e-14) { out[col] = 0; continue; }
+
+      for (let row = col + 1; row < n; row++) {
+        const factor = _M[row][col] / pivot;
+        for (let j = col; j <= n; j++) {
+          _M[row][j] -= factor * _M[col][j];
+        }
+      }
+    }
+
+    // Back substitution
+    for (let i = n - 1; i >= 0; i--) {
+      let sum = _M[i][n];
+      for (let j = i + 1; j < n; j++) sum -= _M[i][j] * out[j];
+      out[i] = Math.abs(_M[i][i]) > 1e-14 ? sum / _M[i][i] : 0;
+    }
+  }
+
+  // ==========================================================================
+  //  RK4 INTEGRATION
+  // ==========================================================================
+  function rk4Step(n, dt) {
+    // k1
+    computeAccelerations(n, theta, omega, _k1o);
+    for (let i = 0; i < n; i++) _k1t[i] = omega[i];
+
+    // k2
+    for (let i = 0; i < n; i++) {
+      _tmpTheta[i] = theta[i] + 0.5 * dt * _k1t[i];
+      _tmpOmega[i] = omega[i] + 0.5 * dt * _k1o[i];
+    }
+    computeAccelerations(n, _tmpTheta, _tmpOmega, _k2o);
+    for (let i = 0; i < n; i++) _k2t[i] = _tmpOmega[i];
+
+    // k3
+    for (let i = 0; i < n; i++) {
+      _tmpTheta[i] = theta[i] + 0.5 * dt * _k2t[i];
+      _tmpOmega[i] = omega[i] + 0.5 * dt * _k2o[i];
+    }
+    computeAccelerations(n, _tmpTheta, _tmpOmega, _k3o);
+    for (let i = 0; i < n; i++) _k3t[i] = _tmpOmega[i];
+
+    // k4
+    for (let i = 0; i < n; i++) {
+      _tmpTheta[i] = theta[i] + dt * _k3t[i];
+      _tmpOmega[i] = omega[i] + dt * _k3o[i];
+    }
+    computeAccelerations(n, _tmpTheta, _tmpOmega, _k4o);
+    for (let i = 0; i < n; i++) _k4t[i] = _tmpOmega[i];
+
+    // Combine
+    for (let i = 0; i < n; i++) {
+      theta[i] += (dt / 6) * (_k1t[i] + 2*_k2t[i] + 2*_k3t[i] + _k4t[i]);
+      omega[i] += (dt / 6) * (_k1o[i] + 2*_k2o[i] + 2*_k3o[i] + _k4o[i]);
+    }
+  }
+
+  // ==========================================================================
+  //  ENERGY COMPUTATION (for monitoring conservation)
+  // ==========================================================================
+  function computeEnergy(n) {
+    // Positions
+    let T = 0, V = 0;
+    // Compute x, y positions and velocities
+    const x = new Float64Array(n);
+    const y = new Float64Array(n);
+    const vx = new Float64Array(n);
+    const vy = new Float64Array(n);
+
+    for (let i = 0; i < n; i++) {
+      x[i] = (i > 0 ? x[i-1] : 0) + lengths[i] * Math.sin(theta[i]);
+      y[i] = (i > 0 ? y[i-1] : 0) + lengths[i] * Math.cos(theta[i]);
+      vx[i] = (i > 0 ? vx[i-1] : 0) + lengths[i] * Math.cos(theta[i]) * omega[i];
+      vy[i] = (i > 0 ? vy[i-1] : 0) - lengths[i] * Math.sin(theta[i]) * omega[i];
+    }
+
+    for (let i = 0; i < n; i++) {
+      T += 0.5 * masses[i] * (vx[i]*vx[i] + vy[i]*vy[i]);
+      V -= masses[i] * g * y[i]; // y is downward positive, so V = -mgy
+    }
+
+    return T + V;
+  }
+
+  // ==========================================================================
+  //  GET PENDULUM POSITIONS (for rendering)
+  // ==========================================================================
+  function getPendulumPositions(n) {
+    const positions = [{x: 0, y: 0}]; // pivot
+    let px = 0, py = 0;
+    for (let i = 0; i < n; i++) {
+      px += lengths[i] * Math.sin(theta[i]);
+      py += lengths[i] * Math.cos(theta[i]); // y downward
+      positions.push({x: px, y: py});
+    }
+    return positions;
+  }
+
+  // ==========================================================================
+  //  CANVAS SIZING
+  // ==========================================================================
+  function resizeCanvases() {
+    const wrapRect = canvasWrap.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+
+    canvasMain.width  = wrapRect.width * dpr;
+    canvasMain.height = wrapRect.height * dpr;
+    canvasMain.style.width  = wrapRect.width + 'px';
+    canvasMain.style.height = wrapRect.height + 'px';
+    ctxMain.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const phaseRect = canvasPhase.parentElement.getBoundingClientRect();
+    const phaseW = phaseRect.width - 32; // padding
+    const phaseH = phaseW;  // square
+    canvasPhase.width  = phaseW * dpr;
+    canvasPhase.height = phaseH * dpr;
+    canvasPhase.style.width  = phaseW + 'px';
+    canvasPhase.style.height = phaseH + 'px';
+    ctxPhase.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function clearPhaseCanvas() {
+    const w = parseFloat(canvasPhase.style.width);
+    const h = parseFloat(canvasPhase.style.height);
+    ctxPhase.fillStyle = '#0a0a0f';
+    ctxPhase.fillRect(0, 0, w, h);
+
+    // Draw axes
+    ctxPhase.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctxPhase.lineWidth = 1;
+    ctxPhase.beginPath();
+    ctxPhase.moveTo(w/2, 0);
+    ctxPhase.lineTo(w/2, h);
+    ctxPhase.moveTo(0, h/2);
+    ctxPhase.lineTo(w, h/2);
+    ctxPhase.stroke();
+
+    // Axis labels
+    ctxPhase.fillStyle = 'rgba(255,255,255,0.15)';
+    ctxPhase.font = '10px Inter, sans-serif';
+    ctxPhase.fillText('θ', w - 14, h/2 - 6);
+    ctxPhase.fillText('ω', w/2 + 6, 14);
+  }
+
+  // ==========================================================================
+  //  RENDERING — Main Canvas
+  // ==========================================================================
+  function renderMain() {
+    const w = parseFloat(canvasMain.style.width);
+    const h = parseFloat(canvasMain.style.height);
+
+    // Full clear each frame (trail is drawn from array)
+    ctxMain.fillStyle = '#0a0a0f';
+    ctxMain.fillRect(0, 0, w, h);
+
+    // Subtle grid
+    ctxMain.strokeStyle = 'rgba(255,255,255,0.02)';
+    ctxMain.lineWidth = 1;
+    const gridSize = 40;
+    for (let x = gridSize; x < w; x += gridSize) {
+      ctxMain.beginPath(); ctxMain.moveTo(x, 0); ctxMain.lineTo(x, h); ctxMain.stroke();
+    }
+    for (let y = gridSize; y < h; y += gridSize) {
+      ctxMain.beginPath(); ctxMain.moveTo(0, y); ctxMain.lineTo(w, y); ctxMain.stroke();
+    }
+
+    // Coordinate system: pivot at center-top area
+    const originX = w / 2;
+    const originY = h * 0.25;
+
+    // Scale: total chain length determines scale
+    let totalLen = 0;
+    for (let i = 0; i < N; i++) totalLen += lengths[i];
+    const scale = Math.min(w, h) * 0.32 / totalLen;
+
+    const positions = getPendulumPositions(N);
+
+    // --- Draw trail for last mass ---
+    if (trail.length > 1) {
+      for (let i = 1; i < trail.length; i++) {
+        const alpha = i / trail.length;
+        const r = 170 + Math.floor(85 * alpha);  // purple to more cyan
+        const gC = Math.floor(alpha * 100);
+        const b = 255;
+        ctxMain.strokeStyle = `rgba(${r}, ${gC}, ${b}, ${alpha * 0.7})`;
+        ctxMain.lineWidth = 1.5 * alpha + 0.5;
+        ctxMain.beginPath();
+        ctxMain.moveTo(
+          originX + trail[i-1].x * scale,
+          originY + trail[i-1].y * scale
+        );
+        ctxMain.lineTo(
+          originX + trail[i].x * scale,
+          originY + trail[i].y * scale
+        );
+        ctxMain.stroke();
+      }
+    }
+
+    // --- Draw a fresh clear area around the pendulum to avoid trail overlap on rods ---
+    // (We redraw the background only along the rods)
+
+    // --- Draw rods ---
+    ctxMain.lineWidth = 2;
+    ctxMain.lineCap = 'round';
+    for (let i = 0; i < N; i++) {
+      const x1 = originX + positions[i].x * scale;
+      const y1 = originY + positions[i].y * scale;
+      const x2 = originX + positions[i+1].x * scale;
+      const y2 = originY + positions[i+1].y * scale;
+
+      // Rod gradient
+      const grad = ctxMain.createLinearGradient(x1, y1, x2, y2);
+      grad.addColorStop(0, 'rgba(0, 229, 255, 0.5)');
+      grad.addColorStop(1, 'rgba(0, 229, 255, 0.3)');
+      ctxMain.strokeStyle = grad;
+      ctxMain.lineWidth = 2.5;
+      ctxMain.beginPath();
+      ctxMain.moveTo(x1, y1);
+      ctxMain.lineTo(x2, y2);
+      ctxMain.stroke();
+    }
+
+    // --- Draw masses ---
+    // Pivot
+    ctxMain.beginPath();
+    ctxMain.arc(originX, originY, 4, 0, Math.PI * 2);
+    ctxMain.fillStyle = 'rgba(255,255,255,0.5)';
+    ctxMain.fill();
+
+    for (let i = 0; i < N; i++) {
+      const px = originX + positions[i+1].x * scale;
+      const py = originY + positions[i+1].y * scale;
+      const isLast = i === N - 1;
+      const radius = isLast ? 7 : 5;
+
+      // Glow
+      if (isLast) {
+        const glow = ctxMain.createRadialGradient(px, py, 0, px, py, 20);
+        glow.addColorStop(0, 'rgba(170, 0, 255, 0.3)');
+        glow.addColorStop(1, 'rgba(170, 0, 255, 0)');
+        ctxMain.fillStyle = glow;
+        ctxMain.beginPath();
+        ctxMain.arc(px, py, 20, 0, Math.PI * 2);
+        ctxMain.fill();
+      }
+
+      // Mass circle
+      ctxMain.beginPath();
+      ctxMain.arc(px, py, radius, 0, Math.PI * 2);
+      ctxMain.fillStyle = isLast ? COLORS.highlight : COLORS.accent;
+      ctxMain.fill();
+
+      // Inner bright spot
+      ctxMain.beginPath();
+      ctxMain.arc(px, py, radius * 0.4, 0, Math.PI * 2);
+      ctxMain.fillStyle = 'rgba(255,255,255,0.6)';
+      ctxMain.fill();
+    }
+
+    // Pivot ring
+    ctxMain.beginPath();
+    ctxMain.arc(originX, originY, 6, 0, Math.PI * 2);
+    ctxMain.strokeStyle = 'rgba(0, 229, 255, 0.4)';
+    ctxMain.lineWidth = 1.5;
+    ctxMain.stroke();
+  }
+
+  // ==========================================================================
+  //  RENDERING — Phase Space
+  // ==========================================================================
+  function renderPhase() {
+    const w = parseFloat(canvasPhase.style.width);
+    const h = parseFloat(canvasPhase.style.height);
+
+    // Full clear
+    ctxPhase.fillStyle = '#0a0a0f';
+    ctxPhase.fillRect(0, 0, w, h);
+
+    // Draw axes
+    ctxPhase.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctxPhase.lineWidth = 1;
+    ctxPhase.beginPath();
+    ctxPhase.moveTo(w/2, 0); ctxPhase.lineTo(w/2, h);
+    ctxPhase.moveTo(0, h/2); ctxPhase.lineTo(w, h/2);
+    ctxPhase.stroke();
+
+    // Tick marks
+    ctxPhase.fillStyle = 'rgba(255,255,255,0.12)';
+    ctxPhase.font = '9px Inter, sans-serif';
+    ctxPhase.textAlign = 'center';
+    ctxPhase.fillText('-\u03C0', w * 0.05, h/2 + 12);
+    ctxPhase.fillText('\u03C0', w * 0.95, h/2 + 12);
+    ctxPhase.fillText('0', w/2 + 8, h/2 + 12);
+
+    // Map theta ∈ [-π, π] -> [0, w], omega ∈ [-range, range] -> [h, 0]
+    const omegaRange = 15;
+    const thetaRange = Math.PI;
+
+    function mapX(t) { return w/2 + (t / thetaRange) * (w/2 * 0.9); }
+    function mapY(o) { return h/2 - (o / omegaRange) * (h/2 * 0.9); }
+
+    // Draw recent trail
+    const len = phaseTrail.length;
+    if (len > 1) {
+      const drawCount = Math.min(len, 300);
+      const start = len - drawCount;
+      for (let i = start + 1; i < len; i++) {
+        const alpha = (i - start) / drawCount;
+        const prev = phaseTrail[i-1];
+        const curr = phaseTrail[i];
+
+        // Skip wrapping jumps
+        if (Math.abs(curr.theta - prev.theta) > Math.PI) continue;
+
+        ctxPhase.strokeStyle = `rgba(0, 229, 255, ${alpha * 0.6})`;
+        ctxPhase.lineWidth = 1 + alpha;
+        ctxPhase.beginPath();
+        ctxPhase.moveTo(mapX(prev.theta), mapY(prev.omega));
+        ctxPhase.lineTo(mapX(curr.theta), mapY(curr.omega));
+        ctxPhase.stroke();
+      }
+
+      // Current point
+      if (len > 0) {
+        const last = phaseTrail[len - 1];
+        const px = mapX(last.theta);
+        const py = mapY(last.omega);
+
+        // Glow
+        const glow = ctxPhase.createRadialGradient(px, py, 0, px, py, 8);
+        glow.addColorStop(0, 'rgba(170, 0, 255, 0.7)');
+        glow.addColorStop(1, 'rgba(170, 0, 255, 0)');
+        ctxPhase.fillStyle = glow;
+        ctxPhase.beginPath();
+        ctxPhase.arc(px, py, 8, 0, Math.PI * 2);
+        ctxPhase.fill();
+
+        ctxPhase.beginPath();
+        ctxPhase.arc(px, py, 3, 0, Math.PI * 2);
+        ctxPhase.fillStyle = COLORS.phasePoint;
+        ctxPhase.fill();
+      }
+    }
+  }
+
+  // ==========================================================================
+  //  MAIN LOOP
+  // ==========================================================================
+  let lastTime = 0;
+  let accumulator = 0;
+
+  function frame(timestamp) {
+    requestAnimationFrame(frame);
+
+    if (!lastTime) { lastTime = timestamp; return; }
+    let dtFrame = (timestamp - lastTime) / 1000;
+    lastTime = timestamp;
+
+    // Clamp to avoid spiral of death
+    if (dtFrame > 0.1) dtFrame = 0.1;
+
+    // FPS tracking
+    frameCount++;
+    fpsTimer += dtFrame;
+    if (fpsTimer >= 1.0) {
+      lastFps = Math.round(frameCount / fpsTimer);
+      fpsVal.textContent = lastFps;
+      frameCount = 0;
+      fpsTimer = 0;
+    }
+
+    if (running) {
+      accumulator += dtFrame * timeScale;
+      let steps = 0;
+
+      while (accumulator >= FIXED_DT && steps < MAX_STEPS) {
+        rk4Step(N, FIXED_DT);
+        simTime += FIXED_DT;
+        steps++;
+
+        // Record trail
+        const positions = getPendulumPositions(N);
+        const lastPos = positions[N];
+        trail.push({x: lastPos.x, y: lastPos.y});
+        if (trail.length > maxTrail) trail.shift();
+
+        // Record phase space (normalize theta to [-pi, pi])
+        let th = theta[N-1] % (2 * Math.PI);
+        if (th > Math.PI) th -= 2 * Math.PI;
+        if (th < -Math.PI) th += 2 * Math.PI;
+        phaseTrail.push({theta: th, omega: omega[N-1]});
+        if (phaseTrail.length > 3000) phaseTrail.shift();
+      }
+      accumulator = Math.min(accumulator, FIXED_DT); // discard excess
+
+      timeVal.textContent = simTime.toFixed(1);
+      energyVal.textContent = computeEnergy(N).toFixed(2);
+    }
+
+    renderMain();
+    renderPhase();
+  }
+
+  // ==========================================================================
+  //  EVENT HANDLERS
+  // ==========================================================================
+  sliderN.addEventListener('input', () => {
+    N = parseInt(sliderN.value);
+    nDisplay.textContent = N;
+    initSim();
+  });
+
+  sliderG.addEventListener('input', () => {
+    g = parseFloat(sliderG.value);
+    gDisplay.textContent = g.toFixed(2);
+  });
+
+  sliderSpeed.addEventListener('input', () => {
+    timeScale = parseFloat(sliderSpeed.value);
+    speedDisplay.textContent = timeScale.toFixed(1) + 'x';
+  });
+
+  sliderTrail.addEventListener('input', () => {
+    maxTrail = parseInt(sliderTrail.value);
+    trailDisplay.textContent = maxTrail;
+    while (trail.length > maxTrail) trail.shift();
+  });
+
+  btnPause.addEventListener('click', () => {
+    running = !running;
+    btnPause.textContent = running ? 'Pause' : 'Resume';
+    btnPause.classList.toggle('active', !running);
+  });
+
+  btnRestart.addEventListener('click', () => {
+    initSim();
+    running = true;
+    btnPause.textContent = 'Pause';
+    btnPause.classList.remove('active');
+    accumulator = 0;
+    lastTime = 0;
+  });
+
+  // Preset buttons
+  document.querySelectorAll('[data-preset]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-preset]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      activePreset = parseInt(btn.dataset.preset);
+      initSim();
+      running = true;
+      btnPause.textContent = 'Pause';
+      btnPause.classList.remove('active');
+      accumulator = 0;
+      lastTime = 0;
+    });
+  });
+
+  // Resize handling
+  let resizeTimeout;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => {
+      resizeCanvases();
+    }, 100);
+  });
+
+  // ==========================================================================
+  //  BOOTSTRAP
+  // ==========================================================================
+  initSim();
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
