@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vortex Street — Lattice Boltzmann</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../../styles.css">
+  <style>
+    .canvas-wrap { background: #081e1e; }
+    .controls h1 { color: var(--vortex-accent); }
+    input[type="range"]::-webkit-slider-thumb { background: var(--vortex-accent); }
+    input[type="range"]::-moz-range-thumb { background: var(--vortex-accent); }
+    .btn.active {
+      border-color: var(--vortex-accent);
+      color: var(--vortex-accent);
+      background: rgba(38,198,218,0.1);
+    }
+    .btn.primary {
+      border-color: var(--vortex-accent);
+      color: var(--vortex-accent);
+      background: rgba(38,198,218,0.1);
+    }
+    .btn.primary:hover { background: rgba(38,198,218,0.2); }
+    .stats {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      line-height: 1.8;
+    }
+    .stats span {
+      color: var(--vortex-accent);
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+    .phase-panel h2 { color: var(--vortex-accent); }
+    .preset-btn {
+      flex: 1; min-width: 0; text-align: center;
+      font-size: 0.72rem; padding: 0.4rem;
+    }
+    .controls .back-link:hover { color: var(--vortex-accent); }
+    .drag-hint {
+      font-size: 0.7rem; color: var(--text-dim);
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+  <div class="sim-page">
+    <!-- Left: Controls Panel -->
+    <div class="controls">
+      <a href="../../index.html" class="back-link">&larr; Back to simulations</a>
+      <h1>Vortex Street</h1>
+
+      <div class="control-group">
+        <label>Obstacles <span id="n-val">1</span></label>
+        <input type="range" id="slider-n" min="1" max="6" value="1">
+      </div>
+
+      <div class="control-group">
+        <label>Inlet Speed <span id="speed-val">0.08</span></label>
+        <input type="range" id="slider-speed" min="2" max="15" value="8">
+      </div>
+
+      <div class="control-group">
+        <label>Reynolds Number <span id="re-val">100</span></label>
+        <input type="range" id="slider-re" min="50" max="400" value="100">
+      </div>
+
+      <div class="control-group">
+        <label>Sim Speed <span id="simspeed-val">20</span> steps/frame</label>
+        <input type="range" id="slider-simspeed" min="5" max="60" value="20">
+      </div>
+
+      <hr class="divider">
+
+      <div class="control-group">
+        <label>Presets</label>
+        <div class="btn-row">
+          <button class="btn preset-btn active" data-preset="karman">Von K&aacute;rm&aacute;n</button>
+          <button class="btn preset-btn" data-preset="tandem">Tandem</button>
+          <button class="btn preset-btn" data-preset="array">Array</button>
+        </div>
+      </div>
+
+      <p class="drag-hint">Click &amp; drag obstacles to reposition</p>
+
+      <hr class="divider">
+
+      <div class="btn-row">
+        <button class="btn primary" id="btn-pause">Pause</button>
+        <button class="btn" id="btn-restart">Restart</button>
+      </div>
+
+      <hr class="divider">
+
+      <div class="stats">
+        Step: <span id="stat-step">0</span><br>
+        Relaxation &tau;: <span id="stat-tau">0.60</span><br>
+        FPS: <span id="stat-fps">0</span>
+      </div>
+    </div>
+
+    <!-- Center: Main Canvas -->
+    <div class="canvas-wrap">
+      <canvas id="canvas-main"></canvas>
+    </div>
+
+    <!-- Right: Phase Space Panel -->
+    <div class="phase-panel">
+      <h2>Vorticity Frequency Spectrum</h2>
+      <canvas id="canvas-phase"></canvas>
+    </div>
+  </div>
+
+<script>
+// ============================================================
+// Vortex Street — LBM D2Q9 Visualisation
+// ============================================================
+(() => {
+  'use strict';
+
+  // --- Grid constants (must match worker) ---
+  const NX = 400, NY = 200;
+
+  // --- Colormap (diverging blue-white-red, 256 entries) ---
+  const CMAP = 256;
+  const cmapU32 = new Uint32Array(CMAP);
+  (function buildCmap() {
+    // 5-stop RdBu: dark-blue, blue, white, red, dark-red
+    const stops = [
+      [5,48,97], [86,146,209], [245,245,245], [206,86,78], [103,0,31]
+    ];
+    function lerp(a,b,t){ return Math.round(a+(b-a)*t); }
+    for (let i = 0; i < CMAP; i++) {
+      const p = i / (CMAP - 1) * 4; // 0-4 across 5 stops
+      const seg = Math.min(3, Math.floor(p));
+      const t = p - seg;
+      const c0 = stops[seg], c1 = stops[seg + 1];
+      const r = lerp(c0[0],c1[0],t);
+      const g = lerp(c0[1],c1[1],t);
+      const b = lerp(c0[2],c1[2],t);
+      cmapU32[i] = (255 << 24) | (b << 16) | (g << 8) | r; // ABGR
+    }
+  })();
+
+  // --- DOM ---
+  const canvasMain  = document.getElementById('canvas-main');
+  const ctxMain     = canvasMain.getContext('2d');
+  const canvasPhase = document.getElementById('canvas-phase');
+  const ctxPhase    = canvasPhase.getContext('2d');
+
+  const sliderN      = document.getElementById('slider-n');
+  const sliderSpeed  = document.getElementById('slider-speed');
+  const sliderRe     = document.getElementById('slider-re');
+  const sliderSim    = document.getElementById('slider-simspeed');
+  const btnPause     = document.getElementById('btn-pause');
+  const btnRestart   = document.getElementById('btn-restart');
+  const presetBtns   = document.querySelectorAll('.preset-btn');
+
+  const valN     = document.getElementById('n-val');
+  const valSpeed = document.getElementById('speed-val');
+  const valRe    = document.getElementById('re-val');
+  const valSim   = document.getElementById('simspeed-val');
+  const statStep = document.getElementById('stat-step');
+  const statTau  = document.getElementById('stat-tau');
+  const statFPS  = document.getElementById('stat-fps');
+
+  // --- Offscreen canvas for vorticity image ---
+  const offCanvas = document.createElement('canvas');
+  offCanvas.width = NX; offCanvas.height = NY;
+  const offCtx = offCanvas.getContext('2d');
+  const imgData = offCtx.createImageData(NX, NY);
+  const imgU32  = new Uint32Array(imgData.data.buffer);
+
+  // --- State ---
+  let obstacles = [];
+  let uInlet = 0.08;
+  let Re = 100;
+  let stepsPerFrame = 20;
+  let paused = false;
+  let currentPreset = 'karman';
+
+  // --- FFT buffers ---
+  const FFT_SIZE = 1024;
+  const probeBuffer = new Float64Array(FFT_SIZE);
+  let probeHead = 0, probeCount = 0;
+
+  // --- FPS ---
+  let frameCount = 0, lastFPSTime = performance.now(), currentFPS = 0;
+
+  // --- Presets ---
+  const PRESETS = {
+    karman: {
+      obstacles: [{ x: 100, y: 100, r: 20 }],
+      Re: 100, uInlet: 0.08
+    },
+    tandem: {
+      obstacles: [
+        { x: 80, y: 100, r: 15 },
+        { x: 180, y: 100, r: 15 }
+      ],
+      Re: 120, uInlet: 0.08
+    },
+    array: {
+      obstacles: [
+        { x: 80, y: 60, r: 10 },
+        { x: 80, y: 140, r: 10 },
+        { x: 150, y: 100, r: 10 },
+        { x: 220, y: 60, r: 10 }
+      ],
+      Re: 80, uInlet: 0.06
+    }
+  };
+
+  function generateDefaultObstacles(n) {
+    const obs = [];
+    const r = Math.max(8, Math.min(20, Math.round(50 / n)));
+    const spacing = NY / (n + 1);
+    for (let i = 0; i < n; i++)
+      obs.push({ x: Math.round(NX * 0.25), y: Math.round(spacing * (i + 1)), r });
+    return obs;
+  }
+
+  // --- Worker ---
+  const basePath = window.location.pathname.endsWith('/')
+    ? window.location.pathname : window.location.pathname + '/';
+  const worker = new Worker(basePath + 'worker.js');
+  let computing = false;
+  let latestFrame = null;
+
+  worker.onerror = function(e) {
+    console.error('Worker error:', e.message, 'at line', e.lineno);
+  };
+
+  worker.onmessage = function(e) {
+    if (e.data.type === 'frame') {
+      computing = false;
+      latestFrame = e.data;
+    }
+  };
+
+  function requestCompute() {
+    if (!computing && !paused) {
+      computing = true;
+      worker.postMessage({ type: 'step' });
+    }
+  }
+
+  function sendInit() {
+    probeHead = 0; probeCount = 0;
+    worker.postMessage({
+      type: 'init', NX, NY,
+      obstacles: obstacles.map(o => ({...o})),
+      uInlet, Re, stepsPerFrame
+    });
+    computing = false;
+    latestFrame = null;
+  }
+
+  function sendReset() {
+    probeHead = 0; probeCount = 0;
+    worker.postMessage({
+      type: 'reset',
+      obstacles: obstacles.map(o => ({...o})),
+      uInlet, Re
+    });
+    computing = false;
+    latestFrame = null;
+  }
+
+  // --- Canvas sizing ---
+  function resizeCanvases() {
+    const mw = canvasMain.parentElement;
+    canvasMain.width  = mw.clientWidth;
+    canvasMain.height = mw.clientHeight;
+    const pw = canvasPhase.parentElement;
+    canvasPhase.width  = pw.clientWidth;
+    canvasPhase.height = pw.clientHeight - 30;
+  }
+
+  // --- Rendering: vorticity ---
+  function renderVorticity(vort) {
+    let maxV = 0;
+    for (let i = 0; i < vort.length; i++) {
+      const a = Math.abs(vort[i]);
+      if (a > maxV) maxV = a;
+    }
+    if (maxV < 1e-10) maxV = 1e-10;
+
+    for (let i = 0; i < NX * NY; i++) {
+      const ci = Math.round((vort[i] / maxV + 1) * 0.5 * (CMAP - 1));
+      imgU32[i] = cmapU32[ci < 0 ? 0 : ci >= CMAP ? CMAP - 1 : ci];
+    }
+    offCtx.putImageData(imgData, 0, 0);
+    ctxMain.imageSmoothingEnabled = true;
+    ctxMain.drawImage(offCanvas, 0, 0, canvasMain.width, canvasMain.height);
+  }
+
+  // --- Rendering: obstacles + probe ---
+  function renderOverlay() {
+    const sx = canvasMain.width / NX;
+    const sy = canvasMain.height / NY;
+
+    // Obstacles
+    for (const o of obstacles) {
+      ctxMain.beginPath();
+      ctxMain.ellipse(o.x * sx, o.y * sy, o.r * sx, o.r * sy, 0, 0, Math.PI * 2);
+      ctxMain.fillStyle = '#0a1a1a';
+      ctxMain.fill();
+      ctxMain.strokeStyle = 'rgba(38,198,218,0.8)';
+      ctxMain.lineWidth = 2;
+      ctxMain.stroke();
+    }
+
+    // Probe point (downstream of first obstacle)
+    let px, py;
+    if (obstacles.length > 0) {
+      px = Math.min(NX - 2, obstacles[0].x + obstacles[0].r * 4);
+      py = obstacles[0].y;
+    } else {
+      px = NX * 0.75; py = NY / 2;
+    }
+    ctxMain.beginPath();
+    ctxMain.arc(px * sx, py * sy, 5, 0, Math.PI * 2);
+    ctxMain.fillStyle = '#ff7043';
+    ctxMain.fill();
+    ctxMain.strokeStyle = '#fff';
+    ctxMain.lineWidth = 1;
+    ctxMain.stroke();
+
+    // Flow direction arrow
+    ctxMain.fillStyle = 'rgba(38,198,218,0.5)';
+    ctxMain.font = '14px Inter, sans-serif';
+    ctxMain.fillText('\u2192 flow', 8, canvasMain.height - 10);
+  }
+
+  // --- FFT ---
+  function fft(re, im) {
+    const n = re.length;
+    for (let i = 1, j = 0; i < n; i++) {
+      let bit = n >> 1;
+      while (j & bit) { j ^= bit; bit >>= 1; }
+      j ^= bit;
+      if (i < j) {
+        let t = re[i]; re[i] = re[j]; re[j] = t;
+        t = im[i]; im[i] = im[j]; im[j] = t;
+      }
+    }
+    for (let len = 2; len <= n; len <<= 1) {
+      const half = len >> 1;
+      const angle = -2 * Math.PI / len;
+      const wR = Math.cos(angle), wI = Math.sin(angle);
+      for (let i = 0; i < n; i += len) {
+        let cR = 1, cI = 0;
+        for (let j = 0; j < half; j++) {
+          const a = i + j, b = a + half;
+          const tR = re[b] * cR - im[b] * cI;
+          const tI = re[b] * cI + im[b] * cR;
+          re[b] = re[a] - tR; im[b] = im[a] - tI;
+          re[a] += tR;        im[a] += tI;
+          const nR = cR * wR - cI * wI;
+          cI = cR * wI + cI * wR; cR = nR;
+        }
+      }
+    }
+  }
+
+  function recordProbe(val) {
+    probeBuffer[probeHead] = val;
+    probeHead = (probeHead + 1) % FFT_SIZE;
+    if (probeCount < FFT_SIZE) probeCount++;
+  }
+
+  // --- Rendering: FFT phase panel ---
+  function renderPhase() {
+    const w = canvasPhase.width, h = canvasPhase.height;
+    if (w === 0 || h === 0) return;
+
+    ctxPhase.fillStyle = '#0d1a1a';
+    ctxPhase.fillRect(0, 0, w, h);
+
+    if (probeCount < FFT_SIZE) {
+      ctxPhase.fillStyle = '#4a6a6a';
+      ctxPhase.font = '11px Inter, sans-serif';
+      ctxPhase.textAlign = 'center';
+      ctxPhase.fillText(
+        'Collecting data\u2026 ' + probeCount + '/' + FFT_SIZE, w / 2, h / 2
+      );
+      return;
+    }
+
+    // Build windowed signal
+    const re = new Float64Array(FFT_SIZE);
+    const im = new Float64Array(FFT_SIZE);
+    for (let i = 0; i < FFT_SIZE; i++) {
+      const idx = (probeHead - FFT_SIZE + i + FFT_SIZE) % FFT_SIZE;
+      const win = 0.5 * (1 - Math.cos(2 * Math.PI * i / (FFT_SIZE - 1)));
+      re[i] = probeBuffer[idx] * win;
+    }
+    fft(re, im);
+
+    // Power spectrum (skip DC)
+    const halfN = FFT_SIZE >> 1;
+    const power = new Float64Array(halfN);
+    let maxP = 0, peakBin = 1;
+    for (let k = 1; k < halfN; k++) {
+      power[k] = re[k] * re[k] + im[k] * im[k];
+      if (power[k] > maxP) { maxP = power[k]; peakBin = k; }
+    }
+
+    const D = obstacles.length > 0 ? obstacles[0].r * 2 : 40;
+    const stMax = 1.0;
+    const kMaxDisplay = Math.min(halfN,
+      Math.floor(stMax * FFT_SIZE * stepsPerFrame * uInlet / D));
+
+    // Strouhal of peak
+    const peakSt = peakBin * D / (FFT_SIZE * stepsPerFrame * uInlet);
+
+    // Plot area
+    const m = { top: 28, right: 15, bottom: 38, left: 48 };
+    const pW = w - m.left - m.right;
+    const pH = h - m.top - m.bottom;
+    if (pW <= 0 || pH <= 0) return;
+
+    // Log scale for y
+    const logMax = Math.log10(Math.max(maxP, 1e-10));
+    const logMin = logMax - 6;
+
+    // Axes
+    ctxPhase.strokeStyle = '#2a3a3a';
+    ctxPhase.lineWidth = 1;
+    ctxPhase.beginPath();
+    ctxPhase.moveTo(m.left, m.top);
+    ctxPhase.lineTo(m.left, h - m.bottom);
+    ctxPhase.lineTo(w - m.right, h - m.bottom);
+    ctxPhase.stroke();
+
+    // Spectrum line
+    ctxPhase.beginPath();
+    let first = true;
+    for (let k = 1; k < kMaxDisplay; k++) {
+      const st = k * D / (FFT_SIZE * stepsPerFrame * uInlet);
+      const logP = Math.log10(Math.max(power[k], 1e-20));
+      const sx = m.left + (st / stMax) * pW;
+      const sy = m.top + pH - Math.max(0, Math.min(pH,
+        (logP - logMin) / (logMax - logMin) * pH));
+      if (first) { ctxPhase.moveTo(sx, sy); first = false; }
+      else ctxPhase.lineTo(sx, sy);
+    }
+    ctxPhase.strokeStyle = '#26c6da';
+    ctxPhase.lineWidth = 1.5;
+    ctxPhase.stroke();
+
+    // Peak marker
+    if (peakBin > 0 && peakBin < kMaxDisplay) {
+      const pkX = m.left + (peakSt / stMax) * pW;
+      ctxPhase.beginPath();
+      ctxPhase.setLineDash([3, 3]);
+      ctxPhase.moveTo(pkX, m.top);
+      ctxPhase.lineTo(pkX, h - m.bottom);
+      ctxPhase.strokeStyle = '#ff7043';
+      ctxPhase.lineWidth = 1;
+      ctxPhase.stroke();
+      ctxPhase.setLineDash([]);
+      ctxPhase.fillStyle = '#ff7043';
+      ctxPhase.font = '10px Inter, sans-serif';
+      ctxPhase.textAlign = 'center';
+      ctxPhase.fillText('St = ' + peakSt.toFixed(3), pkX, m.top - 8);
+    }
+
+    // Labels
+    ctxPhase.fillStyle = '#6a8a8a';
+    ctxPhase.font = '10px Inter, sans-serif';
+    ctxPhase.textAlign = 'center';
+    ctxPhase.fillText('Strouhal Number (fD/U)', m.left + pW / 2, h - 4);
+    ctxPhase.save();
+    ctxPhase.translate(12, m.top + pH / 2);
+    ctxPhase.rotate(-Math.PI / 2);
+    ctxPhase.fillText('Power (log)', 0, 0);
+    ctxPhase.restore();
+
+    // Tick labels
+    ctxPhase.fillStyle = '#557a7a';
+    ctxPhase.font = '9px Inter, sans-serif';
+    ctxPhase.textAlign = 'center';
+    for (let st = 0; st <= stMax; st += 0.2) {
+      const sx = m.left + (st / stMax) * pW;
+      ctxPhase.fillText(st.toFixed(1), sx, h - m.bottom + 14);
+    }
+  }
+
+  // --- Drag interaction ---
+  let dragIdx = -1;
+  let dragOffX = 0, dragOffY = 0;
+
+  function canvasToLattice(e) {
+    const rect = canvasMain.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) / rect.width * NX,
+      y: (e.clientY - rect.top) / rect.height * NY
+    };
+  }
+
+  canvasMain.addEventListener('mousedown', function(e) {
+    const p = canvasToLattice(e);
+    for (let i = 0; i < obstacles.length; i++) {
+      const dx = p.x - obstacles[i].x, dy = p.y - obstacles[i].y;
+      if (dx * dx + dy * dy <= obstacles[i].r * obstacles[i].r * 2.25) {
+        dragIdx = i;
+        dragOffX = obstacles[i].x - p.x;
+        dragOffY = obstacles[i].y - p.y;
+        canvasMain.style.cursor = 'grabbing';
+        return;
+      }
+    }
+  });
+
+  canvasMain.addEventListener('mousemove', function(e) {
+    if (dragIdx < 0) {
+      // hover cursor
+      const p = canvasToLattice(e);
+      let over = false;
+      for (const o of obstacles) {
+        const dx = p.x - o.x, dy = p.y - o.y;
+        if (dx * dx + dy * dy <= o.r * o.r * 2.25) { over = true; break; }
+      }
+      canvasMain.style.cursor = over ? 'grab' : 'default';
+      return;
+    }
+    const p = canvasToLattice(e);
+    const o = obstacles[dragIdx];
+    o.x = Math.max(o.r + 2, Math.min(NX - o.r - 2, p.x + dragOffX));
+    o.y = Math.max(o.r + 2, Math.min(NY - o.r - 2, p.y + dragOffY));
+    worker.postMessage({
+      type: 'updateObstacles',
+      obstacles: obstacles.map(ob => ({...ob}))
+    });
+  });
+
+  function endDrag() {
+    if (dragIdx >= 0) {
+      dragIdx = -1;
+      canvasMain.style.cursor = 'default';
+    }
+  }
+  canvasMain.addEventListener('mouseup', endDrag);
+  canvasMain.addEventListener('mouseleave', endDrag);
+
+  // --- Apply preset ---
+  function applyPreset(name) {
+    currentPreset = name;
+    const p = PRESETS[name];
+    obstacles = p.obstacles.map(o => ({...o}));
+    Re = p.Re; uInlet = p.uInlet;
+
+    sliderN.value = obstacles.length;
+    valN.textContent = obstacles.length;
+    sliderRe.value = Re;
+    valRe.textContent = Re;
+    sliderSpeed.value = Math.round(uInlet * 100);
+    valSpeed.textContent = uInlet.toFixed(2);
+
+    sendReset();
+  }
+
+  // --- Event handlers ---
+  sliderN.addEventListener('input', function() { valN.textContent = sliderN.value; });
+  sliderN.addEventListener('change', function() {
+    obstacles = generateDefaultObstacles(parseInt(sliderN.value));
+    presetBtns.forEach(b => b.classList.remove('active'));
+    sendReset();
+  });
+
+  sliderSpeed.addEventListener('input', function() {
+    uInlet = parseInt(sliderSpeed.value) / 100;
+    valSpeed.textContent = uInlet.toFixed(2);
+    worker.postMessage({ type: 'updateParams', uInlet, Re });
+  });
+
+  sliderRe.addEventListener('input', function() {
+    Re = parseInt(sliderRe.value);
+    valRe.textContent = Re;
+    worker.postMessage({ type: 'updateParams', Re, uInlet });
+  });
+
+  sliderSim.addEventListener('input', function() {
+    stepsPerFrame = parseInt(sliderSim.value);
+    valSim.textContent = stepsPerFrame;
+    worker.postMessage({ type: 'updateParams', stepsPerFrame });
+  });
+
+  btnPause.addEventListener('click', function() {
+    paused = !paused;
+    btnPause.textContent = paused ? 'Resume' : 'Pause';
+    btnPause.classList.toggle('active', paused);
+  });
+
+  btnRestart.addEventListener('click', function() { sendReset(); });
+
+  presetBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      presetBtns.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      applyPreset(btn.dataset.preset);
+    });
+  });
+
+  // --- Main loop ---
+  function mainLoop() {
+    requestAnimationFrame(mainLoop);
+
+    if (latestFrame) {
+      const data = latestFrame;
+      latestFrame = null;
+
+      const vort = data.vorticity instanceof Float32Array
+        ? data.vorticity
+        : new Float32Array(data.vorticity);
+
+      renderVorticity(vort);
+      renderOverlay();
+      recordProbe(data.probeVorticity);
+      renderPhase();
+
+      statStep.textContent = data.stepCount;
+      statTau.textContent = data.tau.toFixed(4);
+    }
+
+    requestCompute();
+
+    // FPS
+    frameCount++;
+    const now = performance.now();
+    if (now - lastFPSTime >= 1000) {
+      currentFPS = frameCount;
+      frameCount = 0;
+      lastFPSTime = now;
+      statFPS.textContent = currentFPS;
+    }
+  }
+
+  // --- Init ---
+  window.addEventListener('resize', resizeCanvases);
+  resizeCanvases();
+  // Set initial preset state without sending reset (worker not yet initialized)
+  const initP = PRESETS['karman'];
+  obstacles = initP.obstacles.map(o => ({...o}));
+  Re = initP.Re; uInlet = initP.uInlet;
+  sliderN.value = obstacles.length; valN.textContent = obstacles.length;
+  sliderRe.value = Re; valRe.textContent = Re;
+  sliderSpeed.value = Math.round(uInlet * 100); valSpeed.textContent = uInlet.toFixed(2);
+  sendInit();
+  mainLoop();
+})();
+</script>
+</body>
+</html>
