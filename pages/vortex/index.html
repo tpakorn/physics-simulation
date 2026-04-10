@@ -278,8 +278,10 @@
   // --- Canvas sizing ---
   function resizeCanvases() {
     const mw = canvasMain.parentElement;
-    canvasMain.width  = mw.clientWidth;
-    canvasMain.height = mw.clientHeight;
+    // Letterbox: preserve 2:1 LBM grid ratio so obstacles render as true circles
+    const scale = Math.min(mw.clientWidth / NX, mw.clientHeight / NY);
+    canvasMain.width  = Math.round(scale * NX);
+    canvasMain.height = Math.round(scale * NY);
     const pw = canvasPhase.parentElement;
     canvasPhase.width  = pw.clientWidth;
     canvasPhase.height = pw.clientHeight - 30;
@@ -383,7 +385,7 @@
     const w = canvasPhase.width, h = canvasPhase.height;
     if (w === 0 || h === 0) return;
 
-    ctxPhase.fillStyle = '#0d1a1a';
+    ctxPhase.fillStyle = '#000000';
     ctxPhase.fillRect(0, 0, w, h);
 
     if (probeCount < FFT_SIZE) {

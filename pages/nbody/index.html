@@ -71,8 +71,8 @@
       </div>
 
       <div class="control-group">
-        <label>Timestep <span id="dt-val">0.002</span></label>
-        <input type="range" id="slider-dt" min="1" max="100" value="20">
+        <label>Timestep <span id="dt-val">0.005</span></label>
+        <input type="range" id="slider-dt" min="1" max="100" value="50">
       </div>
 
       <div class="control-group">
@@ -167,7 +167,7 @@
 
   // --- State ---
   let N = 10;
-  let dt = 0.002;
+  let dt = 0.005;
   let trailLen = 120;
   let softening = 0.5;
   let paused = false;
