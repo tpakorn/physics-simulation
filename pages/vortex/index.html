@@ -224,9 +224,14 @@
   }
 
   // --- Worker ---
-  const basePath = window.location.pathname.endsWith('/')
-    ? window.location.pathname : window.location.pathname + '/';
-  const worker = new Worker(basePath + 'worker.js');
+  // Robust URL: handle /path/index.html, /path/, and /path (no trailing slash)
+  let _wb = document.baseURI;
+  if (!_wb.endsWith('/')) {
+    _wb = _wb.split('/').pop().includes('.')
+      ? _wb.substring(0, _wb.lastIndexOf('/') + 1)  // strip filename
+      : _wb + '/';                                    // add trailing slash
+  }
+  const worker = new Worker(_wb + 'worker.js');
   let computing = false;
   let latestFrame = null;
 

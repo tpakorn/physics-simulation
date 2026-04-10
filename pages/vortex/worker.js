@@ -90,8 +90,12 @@ function initEq() {
       const idx = y * NX + x;
       const isObs = obstacle[idx];
       const u = isObs ? 0 : uInlet;
-      // Small perturbation to seed vortex instability
-      const v = isObs ? 0 : 0.001 * uInlet * Math.sin(2 * Math.PI * y / NY);
+      // Multi-mode perturbation to seed vortex instability quickly
+      const v = isObs ? 0 : 0.01 * uInlet * (
+        Math.sin(2 * Math.PI * y / NY) +
+        0.5 * Math.sin(4 * Math.PI * y / NY) +
+        0.3 * Math.sin(2 * Math.PI * x / NX)
+      );
       rho[idx] = 1.0; ux[idx] = u; uy[idx] = v;
       const usq = u * u + v * v;
       const fi = idx * 9;
