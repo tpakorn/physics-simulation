@@ -2,64 +2,33 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
   <title>N-Body Gravitational Simulation</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../../styles.css">
   <style>
-    /* N-Body page-specific overrides */
-    .canvas-wrap { background: #000000; }
-
-    .controls h1 { color: var(--nbody-accent); }
-
-    input[type="range"]::-webkit-slider-thumb { background: var(--nbody-accent); }
-    input[type="range"]::-moz-range-thumb { background: var(--nbody-accent); }
-
-    .btn.active {
-      border-color: var(--nbody-accent);
-      color: var(--nbody-accent);
-      background: rgba(255, 215, 64, 0.1);
-    }
-
-    .btn.primary {
-      border-color: var(--nbody-accent);
-      color: var(--nbody-accent);
-      background: rgba(255, 215, 64, 0.1);
-    }
-
-    .btn.primary:hover {
-      background: rgba(255, 215, 64, 0.2);
-    }
-
-    .stats {
-      font-size: 0.75rem;
-      color: var(--text-dim);
-      line-height: 1.8;
-    }
-
-    .stats span {
-      color: var(--nbody-accent);
-      font-weight: 600;
-      font-variant-numeric: tabular-nums;
-    }
-
-    .phase-panel h2 { color: var(--nbody-accent); }
-
-    .preset-btn {
-      flex: 1;
-      min-width: 0;
-      text-align: center;
-      font-size: 0.72rem;
-      padding: 0.4rem 0.4rem;
-    }
-
-    .controls .back-link:hover { color: var(--nbody-accent); }
+    .canvas-wrap { background: #05060a; }
+    .preset-btn { flex: 1; min-width: 0; text-align: center; font-size: 0.78rem; padding: 0.5rem 0.4rem; }
   </style>
 </head>
 <body>
-  <div class="sim-page">
+  <div class="sim-page t-nbody">
+
+    <!-- Mobile top bar -->
+    <header class="topbar">
+      <a href="../../index.html" class="topbar-back" aria-label="Back to simulations">‹</a>
+      <div class="topbar-title">N-Body Gravity</div>
+      <div class="topbar-live"><span id="m-live">10 bodies</span></div>
+      <button class="topbar-btn" id="m-graph" aria-label="Toggle energy plot">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 4-6"/></svg>
+      </button>
+    </header>
+
+    <!-- Touch hint -->
+    <div class="touch-hint" id="touch-hint"><b>Flick</b> the space to launch a new world into orbit</div>
+
     <!-- Left: Controls Panel -->
     <div class="controls">
       <a href="../../index.html" class="back-link">&larr; Back to simulations</a>
@@ -124,6 +93,17 @@
       <h2>Total Energy vs Time</h2>
       <canvas id="canvas-phase"></canvas>
     </div>
+
+    <!-- Mobile action bar -->
+    <nav class="actionbar">
+      <button class="act act-secondary" id="m-controls" aria-label="Controls">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="9" cy="8" r="2.4" fill="currentColor"/><circle cx="15" cy="16" r="2.4" fill="currentColor"/></svg>
+      </button>
+      <button class="act act-play" id="m-play" aria-label="Play/Pause"></button>
+      <button class="act act-secondary" id="m-restart" aria-label="Restart">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
+    </nav>
   </div>
 
 <script>
@@ -164,6 +144,7 @@
   const statPE = document.getElementById('stat-pe');
   const statTE = document.getElementById('stat-te');
   const statFPS = document.getElementById('stat-fps');
+  const mLive = document.getElementById('m-live');
 
   // --- State ---
   let N = 10;
@@ -173,6 +154,7 @@
   let paused = false;
   let simTime = 0;
   let currentPreset = 'solar';
+  let aim = { active: false, x0: 0, y0: 0, x1: 0, y1: 0 };
 
   // TypedArrays for body data (SoA layout)
   let px, py, vx, vy, ax, ay, mass, radius;
@@ -497,6 +479,24 @@
       ctxMain.fillStyle = core;
       ctxMain.fill();
     }
+
+    // Launch aim preview (slingshot)
+    if (aim.active) {
+      const ax0 = cx + aim.x0, ay0 = cy + aim.y0;
+      const ax1 = cx + aim.x1, ay1 = cy + aim.y1;
+      ctxMain.strokeStyle = 'rgba(255, 210, 74, 0.55)';
+      ctxMain.setLineDash([5, 5]);
+      ctxMain.lineWidth = 1.5;
+      ctxMain.beginPath();
+      ctxMain.moveTo(ax0, ay0);
+      ctxMain.lineTo(ax1, ay1);
+      ctxMain.stroke();
+      ctxMain.setLineDash([]);
+      ctxMain.beginPath();
+      ctxMain.arc(ax0, ay0, 5, 0, Math.PI * 2);
+      ctxMain.fillStyle = '#ffd24a';
+      ctxMain.fill();
+    }
   }
 
   // --- Rendering: Phase Space (Energy vs Time) ---
@@ -619,6 +619,7 @@
 
     renderMain();
     renderPhase();
+    if (mLive) mLive.textContent = N + (N === 1 ? ' body' : ' bodies');
 
     // FPS
     frameCount++;
@@ -642,6 +643,53 @@
     ctxMain.fillStyle = '#000000';
     ctxMain.fillRect(0, 0, canvasMain.width, canvasMain.height);
   }
+
+  // --- Add a body on the fly (touch slingshot) ---
+  function addBody(x, y, vxn, vyn) {
+    if (N >= MAX_BODIES) return;
+    const grow = (arr) => { const a = new Float64Array(N + 1); a.set(arr); return a; };
+    px = grow(px); py = grow(py); vx = grow(vx); vy = grow(vy);
+    ax = grow(ax); ay = grow(ay); mass = grow(mass); radius = grow(radius);
+    px[N] = x; py[N] = y; vx[N] = vxn; vy[N] = vyn;
+    mass[N] = 8; radius[N] = 2 + Math.sqrt(mass[N]) * 1.1;
+    trails.push({ x: new Float64Array(MAX_TRAIL_LEN), y: new Float64Array(MAX_TRAIL_LEN), head: 0, count: 0 });
+    N++;
+    computeAccelerations();
+    sliderN.value = Math.min(parseInt(sliderN.max), N);
+    valN.textContent = N;
+  }
+
+  // --- Touch / pointer: slingshot a new body ---
+  function nbWorld(e) {
+    const r = canvasMain.getBoundingClientRect();
+    return {
+      x: (e.clientX - r.left) * (canvasMain.width / r.width) - canvasMain.width / 2,
+      y: (e.clientY - r.top) * (canvasMain.height / r.height) - canvasMain.height / 2
+    };
+  }
+  let nbMoved = false;
+  canvasMain.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    canvasMain.setPointerCapture(e.pointerId);
+    const p = nbWorld(e);
+    aim.active = true; aim.x0 = aim.x1 = p.x; aim.y0 = aim.y1 = p.y;
+    nbMoved = false;
+  });
+  canvasMain.addEventListener('pointermove', (e) => {
+    if (!aim.active) return;
+    const p = nbWorld(e);
+    aim.x1 = p.x; aim.y1 = p.y;
+    if (Math.hypot(aim.x1 - aim.x0, aim.y1 - aim.y0) > 6) nbMoved = true;
+  });
+  function nbRelease() {
+    if (!aim.active) return;
+    aim.active = false;
+    const K = 0.06;
+    if (nbMoved) addBody(aim.x0, aim.y0, (aim.x1 - aim.x0) * K, (aim.y1 - aim.y0) * K);
+    else addBody(aim.x0, aim.y0, 0, 0);
+  }
+  canvasMain.addEventListener('pointerup', nbRelease);
+  canvasMain.addEventListener('pointercancel', nbRelease);
 
   // --- Event Handlers ---
   sliderN.addEventListener('input', () => {
@@ -690,5 +738,6 @@
   mainLoop();
 })();
 </script>
+<script src="../ui.js"></script>
 </body>
 </html>

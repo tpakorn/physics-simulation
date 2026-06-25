@@ -2,62 +2,32 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
   <title>N-Pendulum — Chaotic Mechanics</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../../styles.css">
   <style>
-    /* Pendulum-specific accent overrides */
-    input[type="range"]::-webkit-slider-thumb {
-      background: var(--pendulum-accent);
-    }
-    .btn.accent {
-      border-color: var(--pendulum-accent);
-      color: var(--pendulum-accent);
-    }
-    .btn.accent:hover {
-      background: rgba(0,229,255,0.1);
-    }
-    .btn.accent.active {
-      background: rgba(0,229,255,0.18);
-      border-color: var(--pendulum-accent);
-      color: #fff;
-    }
-    .status-bar {
-      display: flex;
-      gap: 1rem;
-      font-size: 0.75rem;
-      color: var(--text-dim);
-      margin-top: auto;
-      padding-top: 0.5rem;
-      border-top: 1px solid var(--border);
-    }
-    .status-bar .val {
-      color: var(--pendulum-accent);
-      font-weight: 600;
-    }
-    .phase-panel .legend {
-      font-size: 0.7rem;
-      color: var(--text-dim);
-      margin-top: 0.4rem;
-      display: flex;
-      justify-content: space-between;
-    }
-    .energy-readout {
-      font-size: 0.75rem;
-      color: var(--text-dim);
-      margin-top: 0.5rem;
-    }
-    .energy-readout .val {
-      color: var(--pendulum-accent);
-      font-weight: 600;
-    }
+    .btn.accent { } /* accent handled by shared --accent tokens */
   </style>
 </head>
 <body>
-  <div class="sim-page">
+  <div class="sim-page t-pendulum">
+
+    <!-- Mobile top bar -->
+    <header class="topbar">
+      <a href="../../index.html" class="topbar-back" aria-label="Back to simulations">‹</a>
+      <div class="topbar-title">N-Pendulum</div>
+      <div class="topbar-live"><span id="m-live">t 0.0s</span></div>
+      <button class="topbar-btn" id="m-graph" aria-label="Toggle phase plot">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 4-6"/></svg>
+      </button>
+    </header>
+
+    <!-- Touch hint -->
+    <div class="touch-hint" id="touch-hint"><b>Drag</b> a bob to pose it, then let go to watch chaos</div>
+
     <!-- Controls Panel -->
     <aside class="controls">
       <a href="../../index.html" class="back-link">← Back to simulations</a>
@@ -130,6 +100,17 @@
         <span>ω (angular velocity)</span>
       </div>
     </aside>
+
+    <!-- Mobile action bar -->
+    <nav class="actionbar">
+      <button class="act act-secondary" id="m-controls" aria-label="Controls">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="8" x2="20" y2="8"/><line x1="4" y1="16" x2="20" y2="16"/><circle cx="9" cy="8" r="2.4" fill="currentColor"/><circle cx="15" cy="16" r="2.4" fill="currentColor"/></svg>
+      </button>
+      <button class="act act-play" id="m-play" aria-label="Play/Pause"></button>
+      <button class="act act-secondary" id="m-restart" aria-label="Restart">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+      </button>
+    </nav>
   </div>
 
 <script>
@@ -182,6 +163,11 @@
   let running = true;
   let simTime = 0;
   let activePreset = 0;
+
+  // Touch grab state
+  let held = false, grabIndex = -1, grabFlingOmega = 0;
+  let grabPrevTheta = 0, grabPrevT = 0;
+  const mLive = document.getElementById('m-live');
 
   // State arrays (preallocated for max N=10)
   let theta   = new Float64Array(10);  // angles
@@ -708,7 +694,7 @@
       fpsTimer = 0;
     }
 
-    if (running) {
+    if (running && !held) {
       accumulator += dtFrame * timeScale;
       let steps = 0;
 
@@ -738,6 +724,7 @@
 
     renderMain();
     renderPhase();
+    if (mLive) mLive.textContent = 't ' + simTime.toFixed(1) + 's';
   }
 
   // ==========================================================================
@@ -795,6 +782,75 @@
     });
   });
 
+  // ==========================================================================
+  //  TOUCH / POINTER — grab a bob, pose it, release to drop
+  // ==========================================================================
+  function vScale() {
+    const w = parseFloat(canvasMain.style.width);
+    const h = parseFloat(canvasMain.style.height);
+    let totalLen = 0; for (let i = 0; i < N; i++) totalLen += lengths[i];
+    return { w, h, originX: w / 2, originY: h * 0.25, scale: Math.min(w, h) * 0.32 / totalLen };
+  }
+
+  function worldFromPointer(clientX, clientY) {
+    const rect = canvasMain.getBoundingClientRect();
+    const vp = vScale();
+    return {
+      x: (clientX - rect.left - vp.originX) / vp.scale,
+      y: (clientY - rect.top  - vp.originY) / vp.scale,
+      scale: vp.scale
+    };
+  }
+
+  canvasMain.addEventListener('pointerdown', (e) => {
+    const p = worldFromPointer(e.clientX, e.clientY);
+    const pos = getPendulumPositions(N);
+    let best = -1, bestD = (30 / p.scale) * (30 / p.scale);
+    for (let i = 0; i < N; i++) {
+      const dx = p.x - pos[i + 1].x, dy = p.y - pos[i + 1].y;
+      const d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    if (best < 0) return;
+    e.preventDefault();
+    canvasMain.setPointerCapture(e.pointerId);
+    grabIndex = best; held = true; grabFlingOmega = 0;
+    grabPrevT = performance.now();
+    grabPrevTheta = Math.atan2(pos[grabIndex + 1].x - pos[grabIndex].x,
+                               pos[grabIndex + 1].y - pos[grabIndex].y);
+  });
+
+  canvasMain.addEventListener('pointermove', (e) => {
+    if (!held) return;
+    e.preventDefault();
+    const p = worldFromPointer(e.clientX, e.clientY);
+    const pos = getPendulumPositions(N);
+    const px = pos[grabIndex].x, py = pos[grabIndex].y;
+    const newTheta = Math.atan2(p.x - px, p.y - py);
+    const now = performance.now();
+    const dt = Math.max((now - grabPrevT) / 1000, 1e-3);
+    let dth = newTheta - grabPrevTheta;
+    while (dth >  Math.PI) dth -= 2 * Math.PI;
+    while (dth < -Math.PI) dth += 2 * Math.PI;
+    grabFlingOmega = Math.max(-8, Math.min(8, dth / dt));
+    grabPrevTheta = newTheta; grabPrevT = now;
+    theta[grabIndex] = newTheta;
+    for (let i = 0; i < N; i++) omega[i] = 0;
+  });
+
+  function releaseGrab(e) {
+    if (!held) return;
+    held = false;
+    omega[grabIndex] = grabFlingOmega;
+    grabIndex = -1;
+    accumulator = 0; lastTime = 0;
+    running = true;
+    btnPause.textContent = 'Pause';
+    btnPause.classList.remove('active');
+  }
+  canvasMain.addEventListener('pointerup', releaseGrab);
+  canvasMain.addEventListener('pointercancel', releaseGrab);
+
   // Resize handling
   let resizeTimeout;
   window.addEventListener('resize', () => {
@@ -812,5 +868,6 @@
 
 })();
 </script>
+<script src="../ui.js"></script>
 </body>
 </html>
